@@ -239,18 +239,17 @@ const videoContainerEl = document.getElementById('videoContainer');
 
 function updateStripePreview() {
   if (stripeToggleEl && videoContainerEl) {
+    const stripeEl = document.getElementById('previewStripe');
     if (stripeToggleEl.checked) {
       videoContainerEl.classList.add('has-stripe');
-      const vh = previewVideo.videoHeight || previewVideo.clientHeight || 360;
+      const vh = previewVideo.clientHeight || previewVideo.videoHeight || 300;
       const stripePx = Math.round(vh * 0.20);
-      const stripeEl = document.getElementById('previewStripe');
       if (stripeEl) stripeEl.style.height = stripePx + 'px';
-      videoContainerEl.style.paddingTop = stripePx + 'px';
+      videoContainerEl.style.paddingTop = '0px';
     } else {
       videoContainerEl.classList.remove('has-stripe');
-      const stripeEl = document.getElementById('previewStripe');
-      if (stripeEl) stripeEl.style.height = '';
-      videoContainerEl.style.paddingTop = '';
+      if (stripeEl) stripeEl.style.height = '0px';
+      videoContainerEl.style.paddingTop = '0px';
     }
   }
 }
