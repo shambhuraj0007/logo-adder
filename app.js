@@ -233,7 +233,7 @@ document.querySelectorAll('input[name="watermarkChoice"]').forEach(radio => {
   });
 });
 
-// ── Stripe Live Preview Toggle ──────────────────────────────
+// ── Stripe Live Preview Toggle (20% of video height) ─────────────
 const stripeToggleEl = document.getElementById('stripeToggle');
 const videoContainerEl = document.getElementById('videoContainer');
 
@@ -241,14 +241,25 @@ function updateStripePreview() {
   if (stripeToggleEl && videoContainerEl) {
     if (stripeToggleEl.checked) {
       videoContainerEl.classList.add('has-stripe');
+      const vh = previewVideo.videoHeight || previewVideo.clientHeight || 360;
+      const stripePx = Math.round(vh * 0.20);
+      const stripeEl = document.getElementById('previewStripe');
+      if (stripeEl) stripeEl.style.height = stripePx + 'px';
+      videoContainerEl.style.paddingTop = stripePx + 'px';
     } else {
       videoContainerEl.classList.remove('has-stripe');
+      const stripeEl = document.getElementById('previewStripe');
+      if (stripeEl) stripeEl.style.height = '';
+      videoContainerEl.style.paddingTop = '';
     }
   }
 }
 
 if (stripeToggleEl) {
   stripeToggleEl.addEventListener('change', updateStripePreview);
+}
+if (previewVideo) {
+  previewVideo.addEventListener('loadedmetadata', updateStripePreview);
 }
 
 // -------- Select quality → load video on page --------
@@ -440,13 +451,13 @@ async function startWatermark(format = 'mp4') {
     const vh = video.videoHeight || 720;
     const duration = video.duration || 1;
 
-    // ── Top stripe — driven by toggle ─────────────────────────────
+    // ── Top stripe — 20% of video height when toggle enabled ─────
     const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
-    const STRIPE_H      = stripeEnabled ? 60 : 0;
+    const STRIPE_H      = stripeEnabled ? Math.round(vh * 0.20) : 0;
     const totalH        = vh + STRIPE_H;
-    console.log(`[VideoX] stripeEnabled=${stripeEnabled} STRIPE_H=${STRIPE_H} canvas=${vw}x${totalH}`);
+    console.log(`[VideoX] stripeEnabled=${stripeEnabled} vh=${vh} STRIPE_H=${STRIPE_H} (20%) canvas=${vw}x${totalH}`);
 
-    setProgress(25, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? '✅ ON (+60px white)' : '❌ OFF'} | Setting up encoder…`);
+    setProgress(25, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? `✅ ON (+${STRIPE_H}px / 20% white)` : '❌ OFF'} | Setting up encoder…`);
 
     const canvas = document.getElementById('wmCanvas');
     canvas.width  = vw;
