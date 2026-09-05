@@ -330,14 +330,16 @@ async function startWatermark(format = 'mp4') {
     const vh = video.videoHeight || 720;
     const duration = video.duration;
 
-    // ── Top stripe — driven by toggle ───────────────────────────
-    const stripeEnabled = document.getElementById('stripeToggle')?.checked ?? false;
-    const STRIPE_H      = stripeEnabled ? 20 : 0;  // px added at top
-    const STRIPE_COLOR  = '#ffffff';                // white stripe
-    const totalH        = vh + STRIPE_H;            // total canvas height
-    // ────────────────────────────────────────────────────
+    // ── Top stripe — driven by toggle ─────────────────────────
+    const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
+    const STRIPE_H      = stripeEnabled ? 20 : 0;
+    const STRIPE_COLOR  = '#ffffff';
+    const totalH        = vh + STRIPE_H;
+    // log to DevTools so you can verify the toggle state
+    console.log(`[VideoX] stripeEnabled=${stripeEnabled} STRIPE_H=${STRIPE_H} canvas=${vw}x${totalH}`);
+    // ────────────────────────────────────────────────────────────
 
-    setProgress(18, `Video ready (${vw}×${vh}${stripeEnabled ? ` → +20px stripe` : ''}). Setting up encoder…`);
+    setProgress(18, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? '✅ ON (+20px white)' : '❌ OFF'} | Setting up encoder…`);
 
     // Canvas — taller by STRIPE_H when enabled
     const canvas = document.getElementById('wmCanvas');
@@ -412,17 +414,33 @@ async function startWatermark(format = 'mp4') {
       let animId;
 
       function renderFrame() {
-        // 1. White stripe at top (only when toggle is on)
-        if (stripeEnabled) {
-          ctx.fillStyle = STRIPE_COLOR;
+        // ── Reset ALL canvas state at start of every frame ──────────
+        ctx.globalAlpha  = 1;
+        ctx.shadowBlur   = 0;
+        ctx.shadowColor  = 'transparent';
+
+        // ── 1. Fill canvas black (base) ──────────────────────────────
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, vw, totalH);
+
+        // ── 2. Draw video frame (offset down when stripe is on) ──────
+        try {
+          ctx.drawImage(video, 0, STRIPE_H, vw, vh);
+        } catch (e) { /* cross-origin taint — ignore */ }
+
+        // ── 3. White stripe drawn ON TOP of video (can't be overwritten) ──
+        if (stripeEnabled && STRIPE_H > 0) {
+          ctx.globalAlpha = 1;
+          ctx.shadowBlur  = 0;
+          ctx.fillStyle   = '#ffffff';
           ctx.fillRect(0, 0, vw, STRIPE_H);
         }
 
-        // 2. Video frame (pushed down by STRIPE_H when stripe is on)
-        try { ctx.drawImage(video, 0, STRIPE_H, vw, vh); } catch (e) { /* tainted – CORS */ }
-
-        // 3. Blurry watermark over the video area
+        // ── 4. Watermark ─────────────────────────────────────────────
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur  = 0;
         drawWatermark();
+
         animId = requestAnimationFrame(renderFrame);
       }
 
