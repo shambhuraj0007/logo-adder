@@ -223,9 +223,23 @@ function selectQuality(url, qual, idx) {
 
   // Load into preview player via our proxy
   // (direct video.twimg.com URLs are blocked from Vercel's origin)
-  previewVideo.src = `/api/proxy?url=${encodeURIComponent(url)}`;
+  const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
+  previewVideo.src = proxyUrl;
   previewVideo.load();
   previewVideo.play().catch(() => {}); // autoplay muted
+
+  // Fallback: if browser <video> streaming fails, fetch blob directly
+  previewVideo.onerror = () => {
+    console.warn('Proxy streaming error in preview <video>, falling back to Blob load...');
+    fetch(proxyUrl)
+      .then(r => r.blob())
+      .then(blob => {
+        previewVideo.src = URL.createObjectURL(blob);
+        previewVideo.load();
+        previewVideo.play().catch(() => {});
+      })
+      .catch(err => console.error('Preview blob load error:', err));
+  };
 
   // Show preview + watermark overlay
   previewWrap.classList.add('visible');
@@ -243,7 +257,7 @@ function selectQuality(url, qual, idx) {
 
 // ============================================================
 //  WATERMARK BURN: Canvas + MediaRecorder
-//  Uses the already-loaded video element (no re-fetch needed)
+//  Flow: Download Video First → Local Object URL → Render Canvas
 // ============================================================
 async function startWatermark(format = 'mp4') {
   if (!activeVideoUrl) { showError('Please select a quality first.'); return; }
@@ -260,106 +274,146 @@ async function startWatermark(format = 'mp4') {
   }
 
   try {
-    // If downloading as MP3, handle it with FFmpeg
+    const videoProxyUrl = `/api/proxy?url=${encodeURIComponent(activeVideoUrl)}`;
+
+    // ── MP3 Audio Extraction Flow ────────────────────────────────
     if (format === 'mp3') {
-      setProgress(10, 'Initializing FFmpeg…');
+      setProgress(5, 'Downloading video for MP3 extraction…');
+      const vidRes = await fetch(videoProxyUrl);
+      if (!vidRes.ok) throw new Error(`HTTP ${vidRes.status} downloading video`);
+      const vidBlob = await vidRes.blob();
+
+      setProgress(25, 'Loading FFmpeg audio converter…');
       const { FFmpeg } = FFmpegWASM;
-      const { fetchFile } = FFmpegUtil;
+      const { fetchFile, toBlobURL } = FFmpegUtil;
       
       const ffmpeg = new FFmpeg();
       ffmpeg.on('progress', ({ progress }) => {
-        setProgress(10 + Math.round(progress * 80), 'Extracting audio…');
+        setProgress(30 + Math.round(progress * 60), `Extracting audio… ${Math.round(progress * 100)}%`);
       });
 
-      // Must specify CDN core URL when ffmpeg.js itself is loaded from CDN
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
       await ffmpeg.load({
-        coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-        wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
       });
       
-      setProgress(20, 'Downloading video for audio extraction…');
-      // Use our own Vercel proxy — adds CORS headers server-side
-      const proxyUrl = `/api/proxy?url=${encodeURIComponent(activeVideoUrl)}`;
-      await ffmpeg.writeFile('input.mp4', await fetchFile(proxyUrl));
+      setProgress(45, 'Writing video data to memory…');
+      await ffmpeg.writeFile('input.mp4', await fetchFile(vidBlob));
       
-      setProgress(40, 'Converting to MP3…');
+      setProgress(60, 'Converting to MP3…');
       await ffmpeg.exec(['-i', 'input.mp4', '-q:a', '0', '-map', 'a', 'output.mp3']);
       
-      setProgress(90, 'Finalizing audio file…');
+      setProgress(95, 'Finalizing MP3 file…');
       const data = await ffmpeg.readFile('output.mp3');
       
       const audioBlob = new Blob([data.buffer], { type: 'audio/mpeg' });
       const dlUrl = URL.createObjectURL(audioBlob);
       
-      setProgress(100, '✅ Done! Saving file…');
+      setProgress(100, '✅ Done! Saving MP3…');
       
       const a = document.createElement('a');
       a.href = dlUrl; a.download = `riya_mishra007_${activeQualLabel}.mp3`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(dlUrl), 15000);
+      try { ffmpeg.terminate(); } catch (e) {}
       
       wmStatus.textContent = '✅ MP3 Audio downloaded!';
       wmStatus.style.color = '#22c55e';
       wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Add Watermark & Download (MP4)';
       wmDownloadBtn.disabled = false;
       document.getElementById('mp3DownloadBtn').disabled = false;
-      
-      return; // Exit early since we handled the mp3 download
+      return;
     }
 
-    // --- MP4 Watermark processing using Canvas + MediaRecorder ---
+    // ── MP4 Watermark Flow: 1. Download Video First ──────────────
+    setProgress(5, 'Downloading video… 0%');
 
-    setProgress(5, 'Fetching video via proxy (CORS bypass)…');
+    let videoBlob;
+    try {
+      const res = await fetch(videoProxyUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status} downloading video`);
 
-    // Route through our /api/proxy so the browser gets CORS headers
-    // and canvas.drawImage() is allowed (no cross-origin taint)
-    const videoProxyUrl = `/api/proxy?url=${encodeURIComponent(activeVideoUrl)}`;
+      const totalBytes = parseInt(res.headers.get('content-length') || '0', 10);
+      if (totalBytes > 0 && res.body) {
+        const reader = res.body.getReader();
+        let receivedBytes = 0;
+        const chunksArr = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunksArr.push(value);
+          receivedBytes += value.length;
+          const pct = Math.min(22, Math.round(5 + (receivedBytes / totalBytes) * 17));
+          const mb = (receivedBytes / (1024 * 1024)).toFixed(1);
+          const totalMb = (totalBytes / (1024 * 1024)).toFixed(1);
+          setProgress(pct, `Downloading video… ${mb} MB / ${totalMb} MB`);
+        }
+        videoBlob = new Blob(chunksArr, { type: 'video/mp4' });
+      } else {
+        videoBlob = await res.blob();
+      }
+    } catch (dlErr) {
+      throw new Error(`Failed to download video: ${dlErr.message}`);
+    }
 
+    setProgress(23, 'Video downloaded! Preparing local canvas player…');
+    const localBlobUrl = URL.createObjectURL(videoBlob);
+
+    // ── 2. Create local video element from Blob URL ──────────────
     const video = document.createElement('video');
-    video.crossOrigin = 'anonymous'; // safe because proxy adds Access-Control-Allow-Origin: *
-    video.src = videoProxyUrl;
-    video.muted = true;
+    video.src = localBlobUrl;
+    video.muted = false; // Enabled for Web Audio API capture
+    video.volume = 0.001; // Silent output to speakers
     video.playsInline = true;
     video.preload = 'auto';
 
     await new Promise((res, rej) => {
       video.onloadedmetadata = res;
-      video.onerror = () => {
-        // If crossOrigin fails (CORS not allowed), fall back to direct link open
-        rej(new Error('CANVAS_TAINTED'));
-      };
+      video.onerror = () => rej(new Error('Failed to load downloaded video data'));
       video.load();
     });
 
+    // ── 3. Audio Capture via Web Audio API ─────────────────────────
+    let audioCtx = null;
+    let audioTrack = null;
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        audioCtx = new AudioCtx();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        const source = audioCtx.createMediaElementSource(video);
+        const dest = audioCtx.createMediaStreamDestination();
+        source.connect(dest);
+        audioTrack = dest.stream.getAudioTracks()[0] || null;
+      }
+    } catch (aErr) {
+      console.warn('Audio capture setup notice:', aErr);
+    }
+
     const vw = video.videoWidth || 1280;
     const vh = video.videoHeight || 720;
-    const duration = video.duration;
+    const duration = video.duration || 1;
 
-    // ── Top stripe — driven by toggle ─────────────────────────
+    // ── Top stripe — driven by toggle ─────────────────────────────
     const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
     const STRIPE_H      = stripeEnabled ? 20 : 0;
-    const STRIPE_COLOR  = '#ffffff';
     const totalH        = vh + STRIPE_H;
-    // log to DevTools so you can verify the toggle state
     console.log(`[VideoX] stripeEnabled=${stripeEnabled} STRIPE_H=${STRIPE_H} canvas=${vw}x${totalH}`);
-    // ────────────────────────────────────────────────────────────
 
-    setProgress(18, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? '✅ ON (+20px white)' : '❌ OFF'} | Setting up encoder…`);
+    setProgress(25, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? '✅ ON (+20px white)' : '❌ OFF'} | Setting up encoder…`);
 
-    // Canvas — taller by STRIPE_H when enabled
     const canvas = document.getElementById('wmCanvas');
     canvas.width  = vw;
     canvas.height = totalH;
     const ctx = canvas.getContext('2d');
 
-    // ----- Draw watermark -----
     function drawWatermark() {
       const fontSize = Math.max(28, Math.round(vw * 0.04));
       const text = 'riya_mishra007';
       ctx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
       const tw = ctx.measureText(text).width;
       const padX = 18, padY = 10;
-      // by is relative to totalH (video sits at STRIPE_H offset)
       const bx = 24, by = totalH - fontSize - padY * 2 - 24;
       const bw = tw + padX * 2, bh = fontSize + padY * 2;
 
@@ -400,40 +454,44 @@ async function startWatermark(format = 'mp4') {
       ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
     }
 
-    // ----- MediaRecorder -----
-    const mimeTypes = [
-      'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm',
+    // ── 4. MediaRecorder Setup ─────────────────────────────────────
+    const candidateTypes = [
+      'video/mp4;codecs=avc1,mp4a.40.2',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
     ];
-    const mimeType = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
-    const fps = 30;
-    const stream = canvas.captureStream(fps);
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 4_000_000 });
+    const mimeType = candidateTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+    const stream = canvas.captureStream(30);
+    if (audioTrack) stream.addTrack(audioTrack);
+
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5_000_000 });
     const chunks = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
-    setProgress(25, 'Recording with watermark…');
+    setProgress(28, 'Rendering watermark onto video frames…');
 
+    // ── 5. Render Loop ─────────────────────────────────────────────
     await new Promise((res, rej) => {
       recorder.start(100);
       let animId;
 
       function renderFrame() {
-        // ── Reset ALL canvas state at start of every frame ──────────
-        ctx.globalAlpha  = 1;
-        ctx.shadowBlur   = 0;
-        ctx.shadowColor  = 'transparent';
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur  = 0;
+        ctx.shadowColor = 'transparent';
 
-        // ── 1. Fill canvas black (base) ──────────────────────────────
+        // 1. Black base
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, vw, totalH);
 
-        // ── 2. Draw video frame (offset down when stripe is on) ──────
+        // 2. Video frame
         try {
           ctx.drawImage(video, 0, STRIPE_H, vw, vh);
-        } catch (e) { /* cross-origin taint — ignore */ }
+        } catch (e) {}
 
-        // ── 3. White stripe drawn ON TOP of video (can't be overwritten) ──
+        // 3. White stripe ON TOP of video (if toggle enabled)
         if (stripeEnabled && STRIPE_H > 0) {
           ctx.globalAlpha = 1;
           ctx.shadowBlur  = 0;
@@ -441,7 +499,7 @@ async function startWatermark(format = 'mp4') {
           ctx.fillRect(0, 0, vw, STRIPE_H);
         }
 
-        // ── 4. Watermark ─────────────────────────────────────────────
+        // 4. Watermark
         ctx.globalAlpha = 1;
         ctx.shadowBlur  = 0;
         drawWatermark();
@@ -451,12 +509,12 @@ async function startWatermark(format = 'mp4') {
 
       video.onplay = () => { animId = requestAnimationFrame(renderFrame); };
       video.onended = () => { cancelAnimationFrame(animId); recorder.stop(); };
-      video.onerror = () => rej(new Error('Playback error'));
+      video.onerror = () => rej(new Error('Playback error during rendering'));
       recorder.onstop = res;
 
       video.ontimeupdate = () => {
         if (duration > 0) {
-          const pct = 25 + Math.round((video.currentTime / duration) * 65);
+          const pct = 28 + Math.round((video.currentTime / duration) * 62);
           setProgress(pct, `Burning watermark… ${Math.round(video.currentTime)}s / ${Math.round(duration)}s`);
         }
       };
@@ -464,44 +522,62 @@ async function startWatermark(format = 'mp4') {
       video.play().catch(rej);
     });
 
-    // ── Canvas recording done — now convert WebM → MP4 via FFmpeg ──
-    setProgress(91, 'Canvas recording done. Loading FFmpeg for MP4 conversion…');
-    await sleep(100);
+    if (audioCtx) {
+      try { audioCtx.close(); } catch (e) {}
+    }
+    URL.revokeObjectURL(localBlobUrl);
 
-    const { FFmpeg: FF } = FFmpegWASM;
-    const { fetchFile: ff_fetchFile } = FFmpegUtil;
+    // ── 6. Final MP4 Packaging / Transcoding ──────────────────────
+    let finalBlob;
+    if (mimeType.includes('mp4')) {
+      setProgress(98, 'Finalizing MP4 file…');
+      finalBlob = new Blob(chunks, { type: 'video/mp4' });
+    } else {
+      // Re-encode WebM to MP4 via FFmpeg WASM (loaded from local same-origin vendor)
+      setProgress(91, 'Canvas recording done. Loading FFmpeg for MP4 conversion…');
+      await sleep(100);
 
-    const ffmpegInst = new FF();
-    ffmpegInst.on('progress', ({ progress }) => {
-      setProgress(91 + Math.round(progress * 8), `Converting to MP4… ${Math.round(progress * 100)}%`);
-    });
+      try {
+        const { FFmpeg: FF } = FFmpegWASM;
+        const { fetchFile: ff_fetchFile, toBlobURL } = FFmpegUtil;
 
-    await ffmpegInst.load({
-      coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
-      wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
-    });
+        const ffmpegInst = new FF();
+        ffmpegInst.on('progress', ({ progress }) => {
+          setProgress(91 + Math.round(progress * 8), `Converting to MP4… ${Math.round(progress * 100)}%`);
+        });
 
-    setProgress(92, 'Writing recorded data…');
-    const webmBlob = new Blob(chunks, { type: mimeType });
-    await ffmpegInst.writeFile('wm_input.webm', await ff_fetchFile(webmBlob));
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+        await ffmpegInst.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
 
-    setProgress(93, 'Re-encoding to H.264 MP4…');
-    await ffmpegInst.exec([
-      '-i', 'wm_input.webm',
-      '-c:v', 'libx264',   // H.264 video codec → real MP4
-      '-preset', 'ultrafast', // fastest encoding
-      '-crf', '23',           // quality (18=best, 28=smallest)
-      '-c:a', 'aac',          // AAC audio codec
-      '-movflags', '+faststart', // web-optimised MP4
-      'output.mp4'
-    ]);
+        setProgress(93, 'Writing recorded data…');
+        const webmBlob = new Blob(chunks, { type: mimeType });
+        await ffmpegInst.writeFile('wm_input.webm', await ff_fetchFile(webmBlob));
 
-    setProgress(99, 'Packaging MP4 file…');
-    const mp4Data = await ffmpegInst.readFile('output.mp4');
+        setProgress(95, 'Re-encoding to H.264 MP4…');
+        await ffmpegInst.exec([
+          '-i', 'wm_input.webm',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-crf', '22',
+          '-c:a', 'aac',
+          '-movflags', '+faststart',
+          'output.mp4'
+        ]);
 
-    const finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
+        setProgress(99, 'Packaging MP4 file…');
+        const mp4Data = await ffmpegInst.readFile('output.mp4');
+        finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
+        try { ffmpegInst.terminate(); } catch (e) {}
+      } catch (ffErr) {
+        console.warn('FFmpeg conversion fallback:', ffErr);
+        finalBlob = new Blob(chunks, { type: mimeType });
+      }
+    }
+
     const dlUrl = URL.createObjectURL(finalBlob);
-
     setProgress(100, '✅ Done! Saving MP4…');
 
     const a = document.createElement('a');
@@ -517,16 +593,8 @@ async function startWatermark(format = 'mp4') {
 
   } catch (err) {
     console.error(err);
-    if (err.message === 'CANVAS_TAINTED' || err.message.includes('taint') || err.message.includes('CORS')) {
-      // Twitter CDN doesn't allow crossOrigin canvas — open direct link as fallback
-      wmProgressWrap.style.display = 'none';
-      showError('⚠️ This video\'s CDN blocks canvas access (CORS). Downloading without watermark instead…');
-      await sleep(800);
-      window.open(activeVideoUrl, '_blank');
-    } else {
-      wmProgressWrap.style.display = 'none';
-      showError('⚠️ ' + (err.message || 'Failed to process. Try a different quality.'));
-    }
+    wmProgressWrap.style.display = 'none';
+    showError('⚠️ ' + (err.message || 'Failed to process. Try a different quality.'));
     wmDownloadBtn.disabled = false;
     document.getElementById('mp3DownloadBtn').disabled = false;
     wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Add Watermark & Download (MP4)';

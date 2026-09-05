@@ -10,9 +10,9 @@
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;900&family=Dancing+Script:wght@700&display=swap" rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;900&family=Dancing+Script:wght@700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
-  <!-- FFmpeg WASM (served locally from same-origin vendor/ to prevent Worker cross-origin errors) -->
-  <script src="vendor/ffmpeg.js"></script>
-  <script src="vendor/ffmpeg-util.js"></script>
+  <!-- FFmpeg WASM (served locally from tracked public/ directory to guarantee same-origin Worker loading) -->
+  <script src="public/ffmpeg/ffmpeg/dist/umd/ffmpeg.js"></script>
+  <script src="public/ffmpeg/util/dist/umd/index.js"></script>
 </head>
 <body>
 
