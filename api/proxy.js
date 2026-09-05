@@ -4,24 +4,38 @@
 export const config = { runtime: 'edge' };
 
 export default async function handler(req) {
+  // ── Handle CORS preflight OPTIONS request ───────────────────
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+        'Access-Control-Allow-Headers': 'Range, Content-Type, Accept, Authorization',
+        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+        'Access-Control-Max-Age': '86400',
+      },
+    });
+  }
+
   const { searchParams } = new URL(req.url);
   const url = searchParams.get('url');
 
   // ── Security: only allow twimg.com video URLs ──────────────
   if (!url) {
     return new Response(JSON.stringify({ error: 'Missing url param' }), {
-      status: 400, headers: { 'Content-Type': 'application/json' }
+      status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
   }
   let parsed;
   try { parsed = new URL(url); } catch {
     return new Response(JSON.stringify({ error: 'Invalid URL' }), {
-      status: 400, headers: { 'Content-Type': 'application/json' }
+      status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
   }
   if (!parsed.hostname.endsWith('twimg.com') && !parsed.hostname.endsWith('twitter.com')) {
     return new Response(JSON.stringify({ error: 'Only twimg.com URLs are allowed' }), {
-      status: 403, headers: { 'Content-Type': 'application/json' }
+      status: 403, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
   }
 
@@ -41,7 +55,7 @@ export default async function handler(req) {
     upstream = await fetch(url, { headers: fetchHeaders });
   } catch (err) {
     return new Response(JSON.stringify({ error: String(err) }), {
-      status: 502, headers: { 'Content-Type': 'application/json' }
+      status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
   }
 
@@ -54,9 +68,11 @@ export default async function handler(req) {
     if (val) resHeaders.set(key, val);
   }
 
-  // CORS headers — allow any origin to use this resource on canvas
+  // CORS headers — allow any origin to use this resource freely
   resHeaders.set('Access-Control-Allow-Origin', '*');
   resHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  resHeaders.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
+  resHeaders.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
   resHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
 
   // Stream the body through without buffering — handles large videos
@@ -65,3 +81,4 @@ export default async function handler(req) {
     headers: resHeaders,
   });
 }
+

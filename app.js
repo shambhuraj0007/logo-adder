@@ -1,11 +1,15 @@
 /* ==========================================
    app.js — Twitter/X Video Downloader
-   New flow:
+   Flow:
      1. Fetch video URLs via API
-     2. Load selected quality into <video> on page
-     3. Show CSS watermark overlay on preview
-     4. "Add Watermark & Download" → Canvas + MediaRecorder
+     2. Load selected quality into <video> preview via proxy
+     3. Show watermark overlay on preview
+     4. "Add Watermark & Download":
+        - Download video blob first (fast & reliable)
+        - Render onto canvas with watermark & optional +20px stripe
+        - Record with audio and output MP4
    ========================================== */
+
 
 // -------- Particle background --------
 (function initParticles() {
@@ -217,10 +221,11 @@ function selectQuality(url, qual, idx) {
   activeVideoUrl = url;
   activeQualLabel = qual;
 
-  // Load into preview player
-  previewVideo.src = url;
+  // Load into preview player via our proxy
+  // (direct video.twimg.com URLs are blocked from Vercel's origin)
+  previewVideo.src = `/api/proxy?url=${encodeURIComponent(url)}`;
   previewVideo.load();
-  previewVideo.play().catch(() => { }); // autoplay muted
+  previewVideo.play().catch(() => {}); // autoplay muted
 
   // Show preview + watermark overlay
   previewWrap.classList.add('visible');
