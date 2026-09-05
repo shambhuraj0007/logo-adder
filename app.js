@@ -273,8 +273,8 @@ async function startWatermark(format = 'mp4') {
       });
       
       setProgress(20, 'Downloading video for audio extraction…');
-      // fetch blob via CORS proxy to bypass Twitter direct link CORS
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(activeVideoUrl)}`;
+      // Use our own Vercel proxy — adds CORS headers server-side
+      const proxyUrl = `/api/proxy?url=${encodeURIComponent(activeVideoUrl)}`;
       await ffmpeg.writeFile('input.mp4', await fetchFile(proxyUrl));
       
       setProgress(40, 'Converting to MP3…');
@@ -303,14 +303,16 @@ async function startWatermark(format = 'mp4') {
     }
 
     // --- MP4 Watermark processing using Canvas + MediaRecorder ---
-    
-    // Re-create a fresh video element so crossOrigin works
-    // (setting crossOrigin after src is set doesn't work on some browsers)
-    setProgress(5, 'Loading video with canvas access…');
+
+    setProgress(5, 'Fetching video via proxy (CORS bypass)…');
+
+    // Route through our /api/proxy so the browser gets CORS headers
+    // and canvas.drawImage() is allowed (no cross-origin taint)
+    const videoProxyUrl = `/api/proxy?url=${encodeURIComponent(activeVideoUrl)}`;
 
     const video = document.createElement('video');
-    video.crossOrigin = 'anonymous';  // needed for canvas.drawImage
-    video.src = activeVideoUrl;
+    video.crossOrigin = 'anonymous'; // safe because proxy adds Access-Control-Allow-Origin: *
+    video.src = videoProxyUrl;
     video.muted = true;
     video.playsInline = true;
     video.preload = 'auto';
