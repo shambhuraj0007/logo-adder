@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>X Video Downloader – Download Twitter Videos Free</title>
+  <meta name="description" content="Download any Twitter/X video instantly for free. Just paste the tweet link and get your video in HD quality." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;900&family=Dancing+Script:wght@700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;900&family=Dancing+Script:wght@700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  
+  <!-- FFmpeg dependencies -->
+  <script src="/public/ffmpeg/dist/umd/ffmpeg.js"></script>
+  <script src="/public/ffmpeg/util/dist/umd/index.js"></script>
+</head>
+<body>
+
+  <!-- Animated background orbs -->
+  <div class="bg-orbs">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <div class="orb orb-4"></div>
+  </div>
+
+  <!-- Particle canvas -->
+  <canvas id="particles"></canvas>
+
+  <!-- ===== HEADER ===== -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo-brand">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.741l7.73-8.835L1.254 2.25H8.08l4.259 5.629 5.905-5.629Zm-1.161 17.52h1.833L7.084 4.126H5.117z" fill="currentColor"/>
+          </svg>
+        </div>
+        <span class="logo-text">VideoX <span class="logo-accent">Downloader</span></span>
+      </div>
+      <nav class="nav-links">
+        <a href="#how" class="nav-link">How it works</a>
+        <a href="#faq" class="nav-link">FAQ</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ===== HERO SECTION ===== -->
+  <main>
+    <section class="hero">
+      <div class="hero-badge">
+        <span class="badge-dot"></span>
+        Free &amp; Unlimited Downloads
+      </div>
+      <h1 class="hero-title">
+        Download <span class="gradient-text">Twitter&nbsp;/&nbsp;X</span><br/>Videos Instantly
+      </h1>
+      <p class="hero-sub">Paste any tweet link — get your video in HD quality, no login required.</p>
+
+      <!-- Input Card -->
+      <div class="card input-card" id="inputCard">
+        <div class="input-row">
+          <div class="input-wrap">
+            <span class="input-icon">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <input
+              type="url"
+              id="tweetUrl"
+              class="url-input"
+              placeholder="Paste Twitter / X link here…  e.g. https://x.com/user/status/123"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button class="clear-btn" id="clearBtn" title="Clear">&#10005;</button>
+          </div>
+          <button class="btn-download" id="fetchBtn" onclick="fetchVideo()">
+            <span class="btn-text">Get Video</span>
+            <span class="btn-arrow">&#8594;</span>
+          </button>
+        </div>
+
+        <!-- Error message -->
+        <div class="error-msg" id="errorMsg"></div>
+
+        <!-- Loading -->
+        <div class="loading-wrap" id="loadingWrap">
+          <div class="spinner-ring"></div>
+          <p class="loading-text">Fetching video links…</p>
+          <div class="loading-bar"><div class="loading-fill" id="loadingFill"></div></div>
+        </div>
+
+        <!-- Results: quality selector -->
+        <div class="results-wrap" id="resultsWrap">
+          <div class="results-header">
+            <svg viewBox="0 0 24 24" fill="none" width="20" height="20"><path d="M22 11.08V12a10 10 0 11-5.93-9.14" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><polyline points="22 4 12 14.01 9 11.01" stroke="#22c55e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Video found! Pick a quality to preview:
+          </div>
+          <div class="quality-grid" id="qualityGrid"></div>
+        </div>
+
+        <!-- Video preview + watermark section -->
+        <div class="preview-wrap" id="previewWrap">
+          <div class="preview-label">
+            <span class="preview-dot"></span> Preview — select quality above to load
+          </div>
+          <div class="video-container">
+            <video id="previewVideo" controls playsinline muted></video>
+            <!-- Canvas watermark overlay shown during recording -->
+            <canvas id="wmCanvas" style="display:none;"></canvas>
+            <div class="video-overlay-wm" id="videoOverlayWm">riya_mishra007</div>
+          </div>
+          <div class="preview-actions">
+            <button class="btn-wm-download" id="wmDownloadBtn" onclick="startWatermark()">
+              <span class="wm-btn-icon">💧</span>
+              <span class="wm-btn-text">Add Watermark &amp; Download</span>
+            </button>
+            <div class="wm-progress-wrap" id="wmProgressWrap" style="display:none;">
+              <div class="wm-bar"><div class="wm-fill" id="wmFill"></div></div>
+              <span class="wm-status" id="wmStatus">Processing…</span>
+            </div>
+          </div>
+          <div class="results-note">
+            <svg viewBox="0 0 24 24" fill="none" width="14" height="14"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><line x1="12" y1="8" x2="12" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="16" x2="12.01" y2="16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            The <strong style="color:#a855f7">riya_mishra007</strong> watermark will be burned into the downloaded video file.
+          </div>
+        </div>
+      </div>
+
+      <!-- Trust badges -->
+      <div class="trust-badges">
+        <div class="badge"><span>🔒</span> No Login</div>
+        <div class="badge"><span>⚡</span> Super Fast</div>
+        <div class="badge"><span>📱</span> Mobile Friendly</div>
+        <div class="badge"><span>🎬</span> HD Quality</div>
+      </div>
+    </section>
+
+    <!-- ===== HOW IT WORKS ===== -->
+    <section class="section" id="how">
+      <h2 class="section-title">How it <span class="gradient-text">works</span></h2>
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-num">01</div>
+          <div class="step-icon">🐦</div>
+          <h3>Copy the Tweet Link</h3>
+          <p>Open Twitter/X, find the video tweet, tap Share → Copy Link.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">02</div>
+          <div class="step-icon">📋</div>
+          <h3>Paste &amp; Fetch</h3>
+          <p>Paste the link in the box above and click <strong>Get Video</strong>.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">03</div>
+          <div class="step-icon">⬇️</div>
+          <h3>Download</h3>
+          <p>Choose your preferred quality and hit download — done in seconds!</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== FAQ ===== -->
+    <section class="section" id="faq">
+      <h2 class="section-title">Frequently <span class="gradient-text">Asked</span></h2>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>Is this service free?</summary>
+          <p>Yes, completely free and unlimited. No sign-up, no hidden charges.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What video qualities are available?</summary>
+          <p>We fetch all available qualities from the tweet — typically 240p, 480p, 720p, and 1080p.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Can I download GIFs from Twitter?</summary>
+          <p>Yes! Twitter GIFs are stored as MP4 files and can be downloaded the same way.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Why is my video not downloading?</summary>
+          <p>Make sure the tweet is public and contains a video. Private tweets cannot be downloaded. Try right-clicking the button and selecting "Save link as…".</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="footer">
+    <p>&copy; 2026 VideoX Downloader — For personal use only. Respect content creators.</p>
+  </footer>
+
+  <!-- ===== BLURRY LOGO WATERMARK (bottom-left) ===== -->
+  <div class="watermark" id="watermark">
+    <span class="watermark-text">riya_mishra007</span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
