@@ -240,11 +240,12 @@ function selectQuality(url, qual, idx) {
 //  WATERMARK BURN: Canvas + MediaRecorder
 //  Uses the already-loaded video element (no re-fetch needed)
 // ============================================================
-async function startWatermark() {
+async function startWatermark(format = 'mp4') {
   if (!activeVideoUrl) { showError('Please select a quality first.'); return; }
   if (wmDownloadBtn.disabled) return;
 
   wmDownloadBtn.disabled = true;
+  document.getElementById('mp3DownloadBtn').disabled = true;
   wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Processing…';
   wmProgressWrap.style.display = 'block';
 
@@ -254,6 +255,55 @@ async function startWatermark() {
   }
 
   try {
+    // If downloading as MP3, handle it with FFmpeg
+    if (format === 'mp3') {
+      setProgress(10, 'Initializing FFmpeg…');
+      const { FFmpeg } = FFmpegWASM;
+      const { fetchFile } = FFmpegUtil;
+      
+      const ffmpeg = new FFmpeg();
+      ffmpeg.on('progress', ({ progress }) => {
+        setProgress(10 + Math.round(progress * 80), 'Extracting audio…');
+      });
+
+      // Must specify CDN core URL when ffmpeg.js itself is loaded from CDN
+      await ffmpeg.load({
+        coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+        wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+      });
+      
+      setProgress(20, 'Downloading video for audio extraction…');
+      // fetch blob via CORS proxy to bypass Twitter direct link CORS
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(activeVideoUrl)}`;
+      await ffmpeg.writeFile('input.mp4', await fetchFile(proxyUrl));
+      
+      setProgress(40, 'Converting to MP3…');
+      await ffmpeg.exec(['-i', 'input.mp4', '-q:a', '0', '-map', 'a', 'output.mp3']);
+      
+      setProgress(90, 'Finalizing audio file…');
+      const data = await ffmpeg.readFile('output.mp3');
+      
+      const audioBlob = new Blob([data.buffer], { type: 'audio/mpeg' });
+      const dlUrl = URL.createObjectURL(audioBlob);
+      
+      setProgress(100, '✅ Done! Saving file…');
+      
+      const a = document.createElement('a');
+      a.href = dlUrl; a.download = `riya_mishra007_${activeQualLabel}.mp3`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(dlUrl), 15000);
+      
+      wmStatus.textContent = '✅ MP3 Audio downloaded!';
+      wmStatus.style.color = '#22c55e';
+      wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Add Watermark & Download (MP4)';
+      wmDownloadBtn.disabled = false;
+      document.getElementById('mp3DownloadBtn').disabled = false;
+      
+      return; // Exit early since we handled the mp3 download
+    }
+
+    // --- MP4 Watermark processing using Canvas + MediaRecorder ---
+    
     // Re-create a fresh video element so crossOrigin works
     // (setting crossOrigin after src is set doesn't work on some browsers)
     setProgress(5, 'Loading video with canvas access…');
@@ -277,12 +327,20 @@ async function startWatermark() {
     const vw = video.videoWidth || 1280;
     const vh = video.videoHeight || 720;
     const duration = video.duration;
-    setProgress(18, `Video ready (${vw}×${vh}). Setting up encoder…`);
 
-    // Canvas
+    // ── Top stripe — driven by toggle ───────────────────────────
+    const stripeEnabled = document.getElementById('stripeToggle')?.checked ?? false;
+    const STRIPE_H      = stripeEnabled ? 20 : 0;  // px added at top
+    const STRIPE_COLOR  = '#ffffff';                // white stripe
+    const totalH        = vh + STRIPE_H;            // total canvas height
+    // ────────────────────────────────────────────────────
+
+    setProgress(18, `Video ready (${vw}×${vh}${stripeEnabled ? ` → +20px stripe` : ''}). Setting up encoder…`);
+
+    // Canvas — taller by STRIPE_H when enabled
     const canvas = document.getElementById('wmCanvas');
-    canvas.width = vw;
-    canvas.height = vh;
+    canvas.width  = vw;
+    canvas.height = totalH;
     const ctx = canvas.getContext('2d');
 
     // ----- Draw watermark -----
@@ -292,7 +350,8 @@ async function startWatermark() {
       ctx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
       const tw = ctx.measureText(text).width;
       const padX = 18, padY = 10;
-      const bx = 24, by = vh - fontSize - padY * 2 - 24;
+      // by is relative to totalH (video sits at STRIPE_H offset)
+      const bx = 24, by = totalH - fontSize - padY * 2 - 24;
       const bw = tw + padX * 2, bh = fontSize + padY * 2;
 
       ctx.save();
@@ -351,7 +410,16 @@ async function startWatermark() {
       let animId;
 
       function renderFrame() {
-        try { ctx.drawImage(video, 0, 0, vw, vh); } catch (e) { /* tainted */ }
+        // 1. White stripe at top (only when toggle is on)
+        if (stripeEnabled) {
+          ctx.fillStyle = STRIPE_COLOR;
+          ctx.fillRect(0, 0, vw, STRIPE_H);
+        }
+
+        // 2. Video frame (pushed down by STRIPE_H when stripe is on)
+        try { ctx.drawImage(video, 0, STRIPE_H, vw, vh); } catch (e) { /* tainted – CORS */ }
+
+        // 3. Blurry watermark over the video area
         drawWatermark();
         animId = requestAnimationFrame(renderFrame);
       }
@@ -387,8 +455,9 @@ async function startWatermark() {
 
     wmStatus.textContent = '✅ Watermarked video downloaded!';
     wmStatus.style.color = '#22c55e';
-    wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Download Again';
+    wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Download Again (MP4)';
     wmDownloadBtn.disabled = false;
+    document.getElementById('mp3DownloadBtn').disabled = false;
 
   } catch (err) {
     console.error(err);
@@ -403,7 +472,8 @@ async function startWatermark() {
       showError('⚠️ ' + (err.message || 'Failed to process. Try a different quality.'));
     }
     wmDownloadBtn.disabled = false;
-    wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Add Watermark & Download';
+    document.getElementById('mp3DownloadBtn').disabled = false;
+    wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Add Watermark & Download (MP4)';
   }
 }
 

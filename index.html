@@ -10,10 +10,9 @@
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;900&family=Dancing+Script:wght@700&display=swap" rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;900&family=Dancing+Script:wght@700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
-  
-  <!-- FFmpeg dependencies -->
-  <script src="/public/ffmpeg/dist/umd/ffmpeg.js"></script>
-  <script src="/public/ffmpeg/util/dist/umd/index.js"></script>
+  <!-- FFmpeg WASM (loaded from CDN — works on Vercel) -->
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
 </head>
 <body>
 
@@ -112,10 +111,24 @@
             <div class="video-overlay-wm" id="videoOverlayWm">riya_mishra007</div>
           </div>
           <div class="preview-actions">
-            <button class="btn-wm-download" id="wmDownloadBtn" onclick="startWatermark()">
+            <button class="btn-wm-download" id="wmDownloadBtn" onclick="startWatermark('mp4')">
               <span class="wm-btn-icon">💧</span>
-              <span class="wm-btn-text">Add Watermark &amp; Download</span>
+              <span class="wm-btn-text">Add Watermark &amp; Download (MP4)</span>
             </button>
+            <button class="btn-wm-download" id="mp3DownloadBtn" onclick="startWatermark('mp3')" style="background: linear-gradient(135deg, #22c55e, #10b981);">
+              <span class="wm-btn-icon">🎵</span>
+              <span class="wm-btn-text">Download Audio (MP3)</span>
+            </button>
+            <!-- ── Top Stripe Toggle ── -->
+            <label class="stripe-toggle" id="stripeToggleLabel" title="Add a 20px white stripe at the top of the exported video">
+              <input type="checkbox" id="stripeToggle" />
+              <span class="stripe-slider"></span>
+              <span class="stripe-toggle-text">
+                <span class="stripe-toggle-icon">🎞️</span>
+                Add 20px white top stripe
+              </span>
+            </label>
+
             <div class="wm-progress-wrap" id="wmProgressWrap" style="display:none;">
               <div class="wm-bar"><div class="wm-fill" id="wmFill"></div></div>
               <span class="wm-status" id="wmStatus">Processing…</span>
