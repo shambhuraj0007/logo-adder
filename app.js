@@ -107,25 +107,41 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // -------- Validation --------
 function isValidTwitterUrl(url) { return /^https?:\/\/(www\.)?(twitter\.com|x\.com)\/.+\/status\/\d+/i.test(url); }
+function isValidInstagramUrl(url) { return /^https?:\/\/(www\.)?(instagram\.com|instagr\.am)\/(p|reel|reels|tv)\/[\w-]+/i.test(url); }
 function extractTweetId(url) { const m = url.match(/\/status\/(\d+)/); return m ? m[1] : null; }
+function extractInstagramShortcode(url) { const m = url.match(/\/(p|reel|reels|tv)\/([\w-]+)/i); return m ? m[2] : null; }
 
-// -------- Main fetch --------
+// -------- Main fetch (Hybrid: Twitter & Instagram) --------
 async function fetchVideo() {
   const raw = tweetInput.value.trim();
   hideError(); hideResults();
-  if (!raw) { showError('Please paste a Twitter / X tweet link first.'); tweetInput.focus(); return; }
-  if (!isValidTwitterUrl(raw)) { showError('That doesn\'t look like a valid Twitter/X link. Example: <code>https://x.com/user/status/1234567890</code>'); return; }
+  if (!raw) { showError('Please paste a Twitter/X or Instagram link first.'); tweetInput.focus(); return; }
 
-  const tweetId = extractTweetId(raw);
-  if (!tweetId) { showError('Could not find a tweet ID in this URL.'); return; }
+  const isTwitter = isValidTwitterUrl(raw);
+  const isInstagram = isValidInstagramUrl(raw);
+
+  if (!isTwitter && !isInstagram) {
+    showError('Please enter a valid link from <b>Twitter/X</b> (e.g. <code>x.com/user/status/123</code>) or <b>Instagram</b> (e.g. <code>instagram.com/reel/C123...</code>).');
+    return;
+  }
 
   const btn = document.getElementById('fetchBtn');
   btn.classList.add('loading');
   btn.querySelector('.btn-text').textContent = 'Fetching…';
-  showLoading('Fetching video links…');
+  showLoading(isInstagram ? 'Fetching Instagram Reel…' : 'Fetching Twitter video…');
 
   try {
-    const variants = await fetchWithApis(raw, tweetId);
+    let variants;
+    if (isTwitter) {
+      const tweetId = extractTweetId(raw);
+      if (!tweetId) throw new Error('Could not find a tweet ID in this URL.');
+      variants = await fetchWithApis(raw, tweetId);
+    } else {
+      const shortcode = extractInstagramShortcode(raw);
+      if (!shortcode) throw new Error('Could not extract Instagram shortcode.');
+      variants = await fetchFromInstagram(raw, shortcode);
+    }
+
     document.getElementById('loadingFill').style.width = '100%';
     await sleep(300);
     hideLoading();
@@ -133,14 +149,14 @@ async function fetchVideo() {
     showResults();
   } catch (err) {
     hideLoading();
-    showError(err.message || 'Failed to fetch video. Make sure the tweet is public and contains a video.');
+    showError(err.message || 'Failed to fetch video. Make sure the post is public and contains a video.');
   } finally {
     btn.classList.remove('loading');
     btn.querySelector('.btn-text').textContent = 'Get Video';
   }
 }
 
-// -------- API --------
+// -------- Twitter API --------
 async function fetchWithApis(url, tweetId) {
   try { return await fetchFromFxTwitter(tweetId); } catch (_) { }
   try { return await fetchFromTwitsave(url); } catch (_) { }
@@ -172,6 +188,41 @@ async function fetchFromTwitsave(url) {
   const links = [...doc.querySelectorAll('a[href*=".mp4"]')];
   if (!links.length) throw new Error('No video links found');
   return links.map((a, i) => ({ url: a.href, bitrate: (links.length - i) * 1000000 }));
+}
+
+// -------- Instagram API --------
+async function fetchFromInstagram(url, shortcode) {
+  // Method 1: Public Instagram Embed parser
+  try {
+    const embedUrl = `https://www.instagram.com/p/${shortcode}/embed/captioned/`;
+    const proxyApi = `/api/proxy?url=${encodeURIComponent(embedUrl)}`;
+    const resp = await fetch(proxyApi);
+    if (resp.ok) {
+      const html = await resp.text();
+      const videoMatch = html.match(/"video_url":"([^"]+)"/) || html.match(/src="([^"]+\.mp4[^"]*)"/);
+      if (videoMatch) {
+        let videoUrl = videoMatch[1].replace(/\\u0026/g, '&').replace(/\\/g, '');
+        if (videoUrl.startsWith('//')) videoUrl = 'https:' + videoUrl;
+        return [{ url: videoUrl, bitrate: 2500000 }];
+      }
+    }
+  } catch (e) {}
+
+  // Method 2: DDInstagram proxy parser
+  try {
+    const ddUrl = `https://ddinstagram.com/reel/${shortcode}`;
+    const resp = await fetch(`https://corsproxy.io/?${encodeURIComponent(ddUrl)}`);
+    if (resp.ok) {
+      const html = await resp.text();
+      const match = html.match(/<meta property="og:video" content="([^"]+)"/i) || html.match(/src="([^"]+\.mp4[^"]*)"/i);
+      if (match) {
+        let videoUrl = match[1].replace(/&amp;/g, '&');
+        return [{ url: videoUrl, bitrate: 2500000 }];
+      }
+    }
+  } catch (e) {}
+
+  throw new Error('Could not retrieve Instagram video. The Reel/Post may be private or age-restricted.');
 }
 
 // -------- Quality label --------

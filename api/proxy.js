@@ -33,8 +33,10 @@ export default async function handler(req) {
       status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
   }
-  if (!parsed.hostname.endsWith('twimg.com') && !parsed.hostname.endsWith('twitter.com')) {
-    return new Response(JSON.stringify({ error: 'Only twimg.com URLs are allowed' }), {
+  const hostname = parsed.hostname.toLowerCase();
+  const isAllowed = ['twimg.com', 'twitter.com', 'cdninstagram.com', 'fbcdn.net', 'instagram.com'].some(d => hostname.endsWith(d));
+  if (!isAllowed) {
+    return new Response(JSON.stringify({ error: 'Only twimg.com, cdninstagram.com, fbcdn.net URLs are allowed' }), {
       status: 403, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
   }
