@@ -459,17 +459,48 @@ async function startWatermark(format = 'mp4') {
       video.play().catch(rej);
     });
 
-    setProgress(93, 'Finalizing…');
-    await sleep(200);
+    // ── Canvas recording done — now convert WebM → MP4 via FFmpeg ──
+    setProgress(91, 'Canvas recording done. Loading FFmpeg for MP4 conversion…');
+    await sleep(100);
 
-    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-    const finalBlob = new Blob(chunks, { type: mimeType });
+    const { FFmpeg: FF } = FFmpegWASM;
+    const { fetchFile: ff_fetchFile } = FFmpegUtil;
+
+    const ffmpegInst = new FF();
+    ffmpegInst.on('progress', ({ progress }) => {
+      setProgress(91 + Math.round(progress * 8), `Converting to MP4… ${Math.round(progress * 100)}%`);
+    });
+
+    await ffmpegInst.load({
+      coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+      wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
+    });
+
+    setProgress(92, 'Writing recorded data…');
+    const webmBlob = new Blob(chunks, { type: mimeType });
+    await ffmpegInst.writeFile('wm_input.webm', await ff_fetchFile(webmBlob));
+
+    setProgress(93, 'Re-encoding to H.264 MP4…');
+    await ffmpegInst.exec([
+      '-i', 'wm_input.webm',
+      '-c:v', 'libx264',   // H.264 video codec → real MP4
+      '-preset', 'ultrafast', // fastest encoding
+      '-crf', '23',           // quality (18=best, 28=smallest)
+      '-c:a', 'aac',          // AAC audio codec
+      '-movflags', '+faststart', // web-optimised MP4
+      'output.mp4'
+    ]);
+
+    setProgress(99, 'Packaging MP4 file…');
+    const mp4Data = await ffmpegInst.readFile('output.mp4');
+
+    const finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
     const dlUrl = URL.createObjectURL(finalBlob);
 
-    setProgress(100, '✅ Done! Saving file…');
+    setProgress(100, '✅ Done! Saving MP4…');
 
     const a = document.createElement('a');
-    a.href = dlUrl; a.download = `riya_mishra007_${activeQualLabel}.${ext}`;
+    a.href = dlUrl; a.download = `riya_mishra007_${activeQualLabel}.mp4`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(dlUrl), 15000);
 
