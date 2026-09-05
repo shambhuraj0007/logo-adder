@@ -418,11 +418,11 @@ async function startWatermark(format = 'mp4') {
 
     // ── Top stripe — driven by toggle ─────────────────────────────
     const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
-    const STRIPE_H      = stripeEnabled ? 20 : 0;
+    const STRIPE_H      = stripeEnabled ? 60 : 0;
     const totalH        = vh + STRIPE_H;
     console.log(`[VideoX] stripeEnabled=${stripeEnabled} STRIPE_H=${STRIPE_H} canvas=${vw}x${totalH}`);
 
-    setProgress(25, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? '✅ ON (+20px white)' : '❌ OFF'} | Setting up encoder…`);
+    setProgress(25, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? '✅ ON (+60px white)' : '❌ OFF'} | Setting up encoder…`);
 
     const canvas = document.getElementById('wmCanvas');
     canvas.width  = vw;
