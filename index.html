@@ -104,7 +104,8 @@
           <div class="preview-label">
             <span class="preview-dot"></span> Preview — select quality above to load
           </div>
-          <div class="video-container">
+          <div class="video-container" id="videoContainer">
+            <div class="preview-stripe" id="previewStripe"></div>
             <video id="previewVideo" controls playsinline muted></video>
             <!-- Canvas watermark overlay shown during recording -->
             <canvas id="wmCanvas" style="display:none;"></canvas>

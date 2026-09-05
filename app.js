@@ -211,6 +211,24 @@ function buildQualityCards(variants) {
   }
 }
 
+// ── Stripe Live Preview Toggle ──────────────────────────────
+const stripeToggleEl = document.getElementById('stripeToggle');
+const videoContainerEl = document.getElementById('videoContainer');
+
+function updateStripePreview() {
+  if (stripeToggleEl && videoContainerEl) {
+    if (stripeToggleEl.checked) {
+      videoContainerEl.classList.add('has-stripe');
+    } else {
+      videoContainerEl.classList.remove('has-stripe');
+    }
+  }
+}
+
+if (stripeToggleEl) {
+  stripeToggleEl.addEventListener('change', updateStripePreview);
+}
+
 // -------- Select quality → load video on page --------
 function selectQuality(url, qual, idx) {
   // Mark card active
@@ -220,6 +238,9 @@ function selectQuality(url, qual, idx) {
 
   activeVideoUrl = url;
   activeQualLabel = qual;
+
+  // Sync stripe preview state
+  updateStripePreview();
 
   // Load into preview player via our proxy
   // (direct video.twimg.com URLs are blocked from Vercel's origin)

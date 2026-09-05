@@ -428,6 +428,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: padding-top 0.25s ease;
 }
 #previewVideo {
   width: 100%;
@@ -435,7 +436,30 @@ body {
   display: block;
   object-fit: contain;
   background: #000;
+  transition: transform 0.25s ease;
 }
+
+/* White top stripe overlay in preview */
+.preview-stripe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 20px;
+  background-color: #ffffff;
+  z-index: 10;
+  display: none;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.video-container.has-stripe {
+  padding-top: 20px;
+  background: #ffffff;
+}
+.video-container.has-stripe .preview-stripe {
+  display: block;
+}
+
 
 /* CSS watermark overlay shown on the preview player */
 .video-overlay-wm {
