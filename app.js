@@ -211,6 +211,28 @@ function buildQualityCards(variants) {
   }
 }
 
+// ── Watermark Selection Helper ─────────────────────────────
+function getSelectedWatermark() {
+  const selected = document.querySelector('input[name="watermarkChoice"]:checked');
+  return selected ? selected.value : 'riya_mishra007';
+}
+
+function updateWatermarkPreviewText() {
+  const name = getSelectedWatermark();
+  const overlayWm = document.getElementById('videoOverlayWm');
+  if (overlayWm) overlayWm.textContent = name;
+  const noteWm = document.getElementById('noteWmName');
+  if (noteWm) noteWm.textContent = name;
+}
+
+document.querySelectorAll('input[name="watermarkChoice"]').forEach(radio => {
+  radio.addEventListener('change', (e) => {
+    document.querySelectorAll('.wm-option').forEach(opt => opt.classList.remove('active'));
+    e.target.closest('.wm-option')?.classList.add('active');
+    updateWatermarkPreviewText();
+  });
+});
+
 // ── Stripe Live Preview Toggle ──────────────────────────────
 const stripeToggleEl = document.getElementById('stripeToggle');
 const videoContainerEl = document.getElementById('videoContainer');
@@ -239,8 +261,9 @@ function selectQuality(url, qual, idx) {
   activeVideoUrl = url;
   activeQualLabel = qual;
 
-  // Sync stripe preview state
+  // Sync stripe & watermark preview state
   updateStripePreview();
+  updateWatermarkPreviewText();
 
   // Load into preview player via our proxy
   // (direct video.twimg.com URLs are blocked from Vercel's origin)
@@ -333,8 +356,9 @@ async function startWatermark(format = 'mp4') {
       
       setProgress(100, '✅ Done! Saving MP3…');
       
+      const wmName = getSelectedWatermark();
       const a = document.createElement('a');
-      a.href = dlUrl; a.download = `riya_mishra007_${activeQualLabel}.mp3`;
+      a.href = dlUrl; a.download = `${wmName}_${activeQualLabel}.mp3`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(dlUrl), 15000);
       try { ffmpeg.terminate(); } catch (e) {}
@@ -431,7 +455,7 @@ async function startWatermark(format = 'mp4') {
 
     function drawWatermark() {
       const fontSize = Math.max(28, Math.round(vw * 0.04));
-      const text = 'riya_mishra007';
+      const text = getSelectedWatermark();
       ctx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
       const tw = ctx.measureText(text).width;
       const padX = 18, padY = 10;
@@ -601,8 +625,9 @@ async function startWatermark(format = 'mp4') {
     const dlUrl = URL.createObjectURL(finalBlob);
     setProgress(100, '✅ Done! Saving MP4…');
 
+    const wmName = getSelectedWatermark();
     const a = document.createElement('a');
-    a.href = dlUrl; a.download = `riya_mishra007_${activeQualLabel}.mp4`;
+    a.href = dlUrl; a.download = `${wmName}_${activeQualLabel}.mp4`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(dlUrl), 15000);
 

@@ -112,6 +112,21 @@
             <div class="video-overlay-wm" id="videoOverlayWm">riya_mishra007</div>
           </div>
           <div class="preview-actions">
+            <!-- ── Watermark Selection ── -->
+            <div class="watermark-select-wrap">
+              <label class="watermark-select-label">✨ Select Watermark Logo:</label>
+              <div class="watermark-options">
+                <label class="wm-option active" id="wmOptRiya">
+                  <input type="radio" name="watermarkChoice" value="riya_mishra007" checked />
+                  <span>riya_mishra007</span>
+                </label>
+                <label class="wm-option" id="wmOptIshaa">
+                  <input type="radio" name="watermarkChoice" value="ishaa_malhotra" />
+                  <span>ishaa_malhotra</span>
+                </label>
+              </div>
+            </div>
+
             <button class="btn-wm-download" id="wmDownloadBtn" onclick="startWatermark('mp4')">
               <span class="wm-btn-icon">💧</span>
               <span class="wm-btn-text">Add Watermark &amp; Download (MP4)</span>
@@ -137,7 +152,7 @@
           </div>
           <div class="results-note">
             <svg viewBox="0 0 24 24" fill="none" width="14" height="14"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><line x1="12" y1="8" x2="12" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="12" y1="16" x2="12.01" y2="16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            The <strong style="color:#a855f7">riya_mishra007</strong> watermark will be burned into the downloaded video file.
+            The <strong id="noteWmName" style="color:#a855f7">riya_mishra007</strong> watermark will be burned into the downloaded video file.
           </div>
         </div>
       </div>

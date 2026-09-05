@@ -485,6 +485,52 @@ body {
 }
 .video-overlay-wm.visible { opacity: 1; }
 
+/* ── Watermark Selector Pills ────────────────────── */
+.watermark-select-wrap {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.watermark-select-label {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--clr-muted);
+}
+.watermark-options {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+.wm-option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--clr-border);
+  background: rgba(255,255,255,0.04);
+  color: var(--clr-muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  user-select: none;
+}
+.wm-option input[type="radio"] { display: none; }
+.wm-option:hover {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.2);
+}
+.wm-option.active {
+  background: rgba(29,155,240,0.18);
+  border-color: #1d9bf0;
+  color: #ffffff;
+  box-shadow: 0 0 16px rgba(29,155,240,0.3);
+}
+
 /* Preview actions row */
 .preview-actions {
   margin-top: 16px;
