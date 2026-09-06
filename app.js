@@ -432,7 +432,13 @@ async function startWatermark(format = 'mp4') {
       return;
     }
 
-    // ── MP4 Watermark Flow: 1. Download Video First ──────────────
+    // ── MP4 Watermark Flow ─────────────────────────────────────────
+    // Strategy: Download original video → create watermark as transparent PNG
+    // → use FFmpeg to overlay the PNG on the original video.
+    // Audio is ALWAYS preserved because FFmpeg works with the original file.
+    // ──────────────────────────────────────────────────────────────
+
+    // Step 1: Download video
     setProgress(5, 'Downloading video… 0%');
 
     let videoBlob;
@@ -450,7 +456,7 @@ async function startWatermark(format = 'mp4') {
           if (done) break;
           chunksArr.push(value);
           receivedBytes += value.length;
-          const pct = Math.min(22, Math.round(5 + (receivedBytes / totalBytes) * 17));
+          const pct = Math.min(20, Math.round(5 + (receivedBytes / totalBytes) * 15));
           const mb = (receivedBytes / (1024 * 1024)).toFixed(1);
           const totalMb = (totalBytes / (1024 * 1024)).toFixed(1);
           setProgress(pct, `Downloading video… ${mb} MB / ${totalMb} MB`);
@@ -463,223 +469,173 @@ async function startWatermark(format = 'mp4') {
       throw new Error(`Failed to download video: ${dlErr.message}`);
     }
 
-    // ── 2. Get video dimensions for canvas rendering ──────────────
-    setProgress(23, 'Video downloaded! Reading video metadata…');
+    // Step 2: Read video metadata (dimensions)
+    setProgress(22, 'Video downloaded! Reading metadata…');
     const localBlobUrl = URL.createObjectURL(videoBlob);
     const probeVideo = document.createElement('video');
     probeVideo.src = localBlobUrl;
     probeVideo.preload = 'metadata';
 
-    const { vw, vh, duration } = await new Promise((res, rej) => {
+    const { vw, vh } = await new Promise((res, rej) => {
       probeVideo.onloadedmetadata = () => res({
         vw: probeVideo.videoWidth || 1280,
         vh: probeVideo.videoHeight || 720,
-        duration: probeVideo.duration || 1,
       });
       probeVideo.onerror = () => rej(new Error('Failed to read video metadata'));
     });
     probeVideo.src = '';
-
-    // ── Top stripe — 20% of video height when toggle enabled ─────
-    const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
-    const STRIPE_H      = stripeEnabled ? Math.round(vh * 0.20) : 0;
-    const totalH        = vh + STRIPE_H;
-    console.log(`[VideoX] stripeEnabled=${stripeEnabled} vh=${vh} STRIPE_H=${STRIPE_H} (20%) canvas=${vw}x${totalH}`);
-
-    setProgress(25, `Video ${vw}×${vh} | Stripe: ${stripeEnabled ? `✅ ON (+${STRIPE_H}px / 20% white)` : '❌ OFF'} | Setting up encoder…`);
-
-    const canvas = document.getElementById('wmCanvas');
-    canvas.width  = vw;
-    canvas.height = totalH;
-    const ctx = canvas.getContext('2d');
-
-    function drawWatermark() {
-      const fontSize = Math.max(28, Math.round(vw * 0.04));
-      const text = getSelectedWatermark();
-      ctx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
-      const tw = ctx.measureText(text).width;
-      const padX = 18, padY = 10;
-      const bx = 24, by = totalH - fontSize - padY * 2 - 24;
-      const bw = tw + padX * 2, bh = fontSize + padY * 2;
-
-      ctx.save();
-      // frosted dark pill
-      ctx.globalAlpha = 0.38;
-      ctx.fillStyle = '#000';
-      roundRect(ctx, bx, by, bw, bh, 12); ctx.fill();
-      ctx.globalAlpha = 1;
-
-      ctx.textBaseline = 'top';
-      ctx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
-
-      // layer 1 — wide glow
-      ctx.shadowColor = 'rgba(29,155,240,0.9)'; ctx.shadowBlur = 32;
-      ctx.globalAlpha = 0.22; ctx.fillStyle = '#fff';
-      ctx.fillText(text, bx + padX, by + padY);
-      ctx.fillText(text, bx + padX, by + padY);
-
-      // layer 2 — purple mid glow
-      ctx.shadowColor = 'rgba(168,85,247,0.85)'; ctx.shadowBlur = 18;
-      ctx.globalAlpha = 0.38;
-      ctx.fillText(text, bx + padX, by + padY);
-
-      // layer 3 — tight white glow
-      ctx.shadowColor = 'rgba(255,255,255,0.8)'; ctx.shadowBlur = 7;
-      ctx.globalAlpha = 0.70; ctx.fillStyle = 'rgba(255,255,255,0.92)';
-      ctx.fillText(text, bx + padX, by + padY);
-
-      ctx.restore();
-    }
-
-    function roundRect(ctx, x, y, w, h, r) {
-      ctx.beginPath();
-      ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-      ctx.lineTo(x + w, y + h - r); ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-      ctx.lineTo(x + r, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-      ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
-    }
-
-    // ── 3. Canvas Render Pass (video frames only, no audio capture) ───
-    const candidateTypes = [
-      'video/mp4;codecs=avc1',
-      'video/mp4',
-      'video/webm;codecs=vp9',
-      'video/webm;codecs=vp8',
-      'video/webm',
-    ];
-    const mimeType = candidateTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
-
-    // Create a silent video element just for rendering frames
-    const renderVideo = document.createElement('video');
-    renderVideo.src = localBlobUrl;
-    renderVideo.muted = true;  // muted is fine — we'll mux real audio from original blob via FFmpeg
-    renderVideo.playsInline = true;
-    renderVideo.preload = 'auto';
-
-    await new Promise((res, rej) => {
-      renderVideo.onloadedmetadata = res;
-      renderVideo.onerror = () => rej(new Error('Failed to load video for rendering'));
-      renderVideo.load();
-    });
-
-    const stream = canvas.captureStream(30);
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5_000_000 });
-    const chunks = [];
-    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-
-    setProgress(28, 'Rendering watermark onto video frames…');
-
-    // ── 4. Render Loop ─────────────────────────────────────────────
-    await new Promise((res, rej) => {
-      recorder.start(100);
-      let animId;
-
-      function renderFrame() {
-        ctx.globalAlpha = 1;
-        ctx.shadowBlur  = 0;
-        ctx.shadowColor = 'transparent';
-
-        // 1. Black base
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, vw, totalH);
-
-        // 2. Video frame
-        try {
-          ctx.drawImage(renderVideo, 0, STRIPE_H, vw, vh);
-        } catch (e) {}
-
-        // 3. White stripe ON TOP of video (if toggle enabled)
-        if (stripeEnabled && STRIPE_H > 0) {
-          ctx.globalAlpha = 1;
-          ctx.shadowBlur  = 0;
-          ctx.fillStyle   = '#ffffff';
-          ctx.fillRect(0, 0, vw, STRIPE_H);
-        }
-
-        // 4. Watermark
-        ctx.globalAlpha = 1;
-        ctx.shadowBlur  = 0;
-        drawWatermark();
-
-        animId = requestAnimationFrame(renderFrame);
-      }
-
-      renderVideo.onplay = () => { animId = requestAnimationFrame(renderFrame); };
-      renderVideo.onended = () => { cancelAnimationFrame(animId); recorder.stop(); };
-      renderVideo.onerror = () => rej(new Error('Playback error during rendering'));
-      recorder.onstop = res;
-
-      renderVideo.ontimeupdate = () => {
-        if (duration > 0) {
-          const pct = 28 + Math.round((renderVideo.currentTime / duration) * 55);
-          setProgress(pct, `Burning watermark… ${Math.round(renderVideo.currentTime)}s / ${Math.round(duration)}s`);
-        }
-      };
-
-      renderVideo.play().catch(rej);
-    });
-
     URL.revokeObjectURL(localBlobUrl);
 
-    // ── 5. Mux original audio back using FFmpeg WASM ──────────────
-    // The canvas recording has NO audio (muted). We use FFmpeg to mux
-    // the original video's audio track into the watermarked canvas video.
-    setProgress(85, 'Canvas render complete. Loading FFmpeg to restore audio…');
-    await sleep(100);
+    // Step 3: Determine stripe settings
+    const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
+    const STRIPE_H = stripeEnabled ? Math.round(vh * 0.20) : 0;
+    const totalH = vh + STRIPE_H;
+    console.log(`[VideoX] FFmpeg overlay: vw=${vw} vh=${vh} stripe=${stripeEnabled} STRIPE_H=${STRIPE_H} totalH=${totalH}`);
+
+    setProgress(25, `Video ${vw}×${vh} | Creating watermark overlay…`);
+
+    // Step 4: Render watermark as a transparent PNG
+    function roundRect(c, x, y, w, h, r) {
+      c.beginPath();
+      c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.quadraticCurveTo(x + w, y, x + w, y + r);
+      c.lineTo(x + w, y + h - r); c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      c.lineTo(x + r, y + h); c.quadraticCurveTo(x, y + h, x, y + h - r);
+      c.lineTo(x, y + r); c.quadraticCurveTo(x, y, x + r, y); c.closePath();
+    }
+
+    const wmCanvas = document.createElement('canvas');
+    wmCanvas.width = vw;
+    wmCanvas.height = totalH;
+    const wmCtx = wmCanvas.getContext('2d');
+    // Canvas starts fully transparent — perfect for overlay
+
+    // Draw watermark (same visual as preview)
+    const fontSize = Math.max(28, Math.round(vw * 0.04));
+    const wmText = getSelectedWatermark();
+    wmCtx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
+    const tw = wmCtx.measureText(wmText).width;
+    const padX = 18, padY = 10;
+    const bx = 24, by = totalH - fontSize - padY * 2 - 24;
+    const bw = tw + padX * 2, bh = fontSize + padY * 2;
+
+    // frosted dark pill background
+    wmCtx.save();
+    wmCtx.globalAlpha = 0.38;
+    wmCtx.fillStyle = '#000';
+    roundRect(wmCtx, bx, by, bw, bh, 12);
+    wmCtx.fill();
+    wmCtx.globalAlpha = 1;
+
+    wmCtx.textBaseline = 'top';
+    wmCtx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
+
+    // layer 1 — wide glow
+    wmCtx.shadowColor = 'rgba(29,155,240,0.9)'; wmCtx.shadowBlur = 32;
+    wmCtx.globalAlpha = 0.22; wmCtx.fillStyle = '#fff';
+    wmCtx.fillText(wmText, bx + padX, by + padY);
+    wmCtx.fillText(wmText, bx + padX, by + padY);
+
+    // layer 2 — purple mid glow
+    wmCtx.shadowColor = 'rgba(168,85,247,0.85)'; wmCtx.shadowBlur = 18;
+    wmCtx.globalAlpha = 0.38;
+    wmCtx.fillText(wmText, bx + padX, by + padY);
+
+    // layer 3 — tight white glow
+    wmCtx.shadowColor = 'rgba(255,255,255,0.8)'; wmCtx.shadowBlur = 7;
+    wmCtx.globalAlpha = 0.70; wmCtx.fillStyle = 'rgba(255,255,255,0.92)';
+    wmCtx.fillText(wmText, bx + padX, by + padY);
+    wmCtx.restore();
+
+    // Export watermark canvas as PNG blob
+    const wmPngBlob = await new Promise(resolve => wmCanvas.toBlob(resolve, 'image/png'));
+
+    // Step 5: Load FFmpeg WASM and process
+    setProgress(30, 'Loading FFmpeg video processor…');
 
     let finalBlob;
     try {
       const { FFmpeg: FF } = FFmpegWASM;
-      const { fetchFile: ff_fetchFile } = FFmpegUtil;
+      const { fetchFile: ff_fetchFile, toBlobURL } = FFmpegUtil;
 
       const ffmpegInst = new FF();
       ffmpegInst.on('log', ({ message }) => console.log('[FFmpeg]', message));
       ffmpegInst.on('progress', ({ progress }) => {
-        setProgress(85 + Math.round(progress * 13), `Muxing audio… ${Math.round(progress * 100)}%`);
+        const pct = 45 + Math.round(progress * 50);
+        setProgress(pct, `Processing video… ${Math.round(progress * 100)}%`);
       });
 
-      // Load FFmpeg from local same-origin files (required by COEP require-corp)
-      await ffmpegInst.load({
-        coreURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.js',
-        wasmURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.wasm',
-      });
+      // Try loading FFmpeg — local first, then CDN via toBlobURL
+      try {
+        await ffmpegInst.load({
+          coreURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.js',
+          wasmURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.wasm',
+        });
+      } catch (localErr) {
+        console.warn('Local FFmpeg core load failed, trying CDN:', localErr);
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+        await ffmpegInst.load({
+          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        });
+      }
 
-      setProgress(90, 'Writing video data to FFmpeg…');
+      setProgress(40, 'Writing files to FFmpeg…');
 
-      // Write the canvas-recorded video (video only, no audio)
-      const canvasBlob = new Blob(chunks, { type: mimeType });
-      await ffmpegInst.writeFile('canvas_video.webm', await ff_fetchFile(canvasBlob));
+      // Write original video + watermark PNG into FFmpeg filesystem
+      await ffmpegInst.writeFile('input.mp4', await ff_fetchFile(videoBlob));
+      await ffmpegInst.writeFile('watermark.png', await ff_fetchFile(wmPngBlob));
 
-      // Write the original downloaded video (audio source)
-      await ffmpegInst.writeFile('original.mp4', await ff_fetchFile(videoBlob));
+      setProgress(45, 'Burning watermark into video (with audio)…');
 
-      setProgress(93, 'Muxing watermarked video with original audio…');
+      // Build FFmpeg command
+      // The watermark PNG is full-size (vw × totalH), overlay at 0:0
+      // Audio is preserved from the original via -map 0:a?
+      if (stripeEnabled && STRIPE_H > 0) {
+        // Pad original video with white stripe on top, then overlay watermark
+        await ffmpegInst.exec([
+          '-i', 'input.mp4',
+          '-i', 'watermark.png',
+          '-filter_complex',
+          `[0:v]pad=${vw}:${totalH}:0:${STRIPE_H}:white[padded];[padded][1:v]overlay=0:0[vout]`,
+          '-map', '[vout]',
+          '-map', '0:a?',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-crf', '23',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-movflags', '+faststart',
+          '-y', 'output.mp4'
+        ]);
+      } else {
+        // Just overlay watermark on original video
+        await ffmpegInst.exec([
+          '-i', 'input.mp4',
+          '-i', 'watermark.png',
+          '-filter_complex', '[0:v][1:v]overlay=0:0[vout]',
+          '-map', '[vout]',
+          '-map', '0:a?',
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-crf', '23',
+          '-c:a', 'aac',
+          '-b:a', '192k',
+          '-movflags', '+faststart',
+          '-y', 'output.mp4'
+        ]);
+      }
 
-      // Mux: video from canvas + audio from original.
-      // Use -map 1:a? (optional) so videos without audio (GIFs) don't error.
-      await ffmpegInst.exec([
-        '-i', 'canvas_video.webm',  // input 0: watermarked video (no audio)
-        '-i', 'original.mp4',        // input 1: original video (has audio)
-        '-map', '0:v:0',             // video stream from canvas recording
-        '-map', '1:a?',              // audio from original (optional — won't fail if absent)
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '22',
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-shortest',
-        '-movflags', '+faststart',
-        'output.mp4'
-      ]);
-
-      setProgress(99, 'Packaging final MP4…');
+      setProgress(97, 'Reading final MP4…');
       const mp4Data = await ffmpegInst.readFile('output.mp4');
       finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
       try { ffmpegInst.terminate(); } catch (e) {}
+
     } catch (ffErr) {
-      console.error('FFmpeg audio mux failed:', ffErr);
-      // Fallback: deliver canvas recording without audio mux
-      finalBlob = new Blob(chunks, { type: mimeType });
+      console.error('FFmpeg processing failed:', ffErr);
+      // Fallback: download the ORIGINAL video as-is (with audio, no watermark)
+      // This is better than a silent video
+      console.warn('Falling back to original video download (with audio, without watermark)');
+      finalBlob = videoBlob;
     }
 
     const dlUrl = URL.createObjectURL(finalBlob);
