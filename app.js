@@ -433,9 +433,13 @@ async function startWatermark(format = 'mp4') {
     }
 
     // ── MP4 Watermark Flow ─────────────────────────────────────────
-    // Strategy: Download original video → create watermark as transparent PNG
-    // → use FFmpeg to overlay the PNG on the original video.
-    // Audio is ALWAYS preserved because FFmpeg works with the original file.
+    // Strategy: Canvas + MediaRecorder with PROPER audio capture.
+    //  1. Download video blob
+    //  2. Create video element from blob (same-origin)
+    //  3. Capture audio via Web Audio API or captureStream
+    //  4. Render canvas frames with watermark
+    //  5. MediaRecorder records canvas video + audio
+    //  6. Output file with watermark AND audio
     // ──────────────────────────────────────────────────────────────
 
     // Step 1: Download video
@@ -469,32 +473,104 @@ async function startWatermark(format = 'mp4') {
       throw new Error(`Failed to download video: ${dlErr.message}`);
     }
 
-    // Step 2: Read video metadata (dimensions)
-    setProgress(22, 'Video downloaded! Reading metadata…');
+    // Step 2: Create video element from blob
+    setProgress(22, 'Video downloaded! Setting up player…');
     const localBlobUrl = URL.createObjectURL(videoBlob);
-    const probeVideo = document.createElement('video');
-    probeVideo.src = localBlobUrl;
-    probeVideo.preload = 'metadata';
 
-    const { vw, vh } = await new Promise((res, rej) => {
-      probeVideo.onloadedmetadata = () => res({
-        vw: probeVideo.videoWidth || 1280,
-        vh: probeVideo.videoHeight || 720,
-      });
-      probeVideo.onerror = () => rej(new Error('Failed to read video metadata'));
+    const video = document.createElement('video');
+    video.src = localBlobUrl;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.muted = false;      // MUST be unmuted for audio capture
+    video.crossOrigin = 'anonymous';
+
+    await new Promise((res, rej) => {
+      video.oncanplay = res;
+      video.onerror = () => rej(new Error('Failed to load video data'));
+      video.load();
     });
-    probeVideo.src = '';
-    URL.revokeObjectURL(localBlobUrl);
 
-    // Step 3: Determine stripe settings
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+    const duration = video.duration || 1;
+
+    // Step 3: Stripe settings
     const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
     const STRIPE_H = stripeEnabled ? Math.round(vh * 0.20) : 0;
     const totalH = vh + STRIPE_H;
-    console.log(`[VideoX] FFmpeg overlay: vw=${vw} vh=${vh} stripe=${stripeEnabled} STRIPE_H=${STRIPE_H} totalH=${totalH}`);
 
-    setProgress(25, `Video ${vw}×${vh} | Creating watermark overlay…`);
+    setProgress(24, `Video ${vw}×${vh} | Setting up audio capture…`);
 
-    // Step 4: Render watermark as a transparent PNG
+    // Step 4: Audio capture — try multiple methods
+    let audioTrack = null;
+    let audioCtx = null;
+
+    // Method 1: Web Audio API — route audio through AudioContext
+    // This captures audio at full volume without speaker output
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        audioCtx = new AudioCtx();
+        // AudioContext MUST be running — user clicked button so interaction is present
+        if (audioCtx.state === 'suspended') {
+          await audioCtx.resume();
+        }
+        console.log('[VideoX] AudioContext state:', audioCtx.state);
+
+        const source = audioCtx.createMediaElementSource(video);
+        const dest = audioCtx.createMediaStreamDestination();
+
+        // Route 1: audio → capture destination (full volume for recording)
+        source.connect(dest);
+
+        // Route 2: audio → silent gain → speakers (keeps pipeline alive)
+        const silentGain = audioCtx.createGain();
+        silentGain.gain.value = 0;
+        source.connect(silentGain);
+        silentGain.connect(audioCtx.destination);
+
+        const tracks = dest.stream.getAudioTracks();
+        if (tracks.length > 0) {
+          audioTrack = tracks[0];
+          console.log('[VideoX] ✅ Audio captured via Web Audio API');
+        }
+      }
+    } catch (e) {
+      console.warn('[VideoX] Web Audio API failed:', e);
+    }
+
+    // Method 2 fallback: video.captureStream()
+    if (!audioTrack) {
+      try {
+        video.volume = 1;
+        const vs = video.captureStream ? video.captureStream() :
+                   video.mozCaptureStream ? video.mozCaptureStream() : null;
+        if (vs) {
+          const tracks = vs.getAudioTracks();
+          if (tracks.length > 0) {
+            audioTrack = tracks[0];
+            console.log('[VideoX] ✅ Audio captured via captureStream');
+          }
+        }
+      } catch (e) {
+        console.warn('[VideoX] captureStream fallback failed:', e);
+      }
+    }
+
+    if (audioTrack) {
+      console.log('[VideoX] Audio track ready:', audioTrack.label, 'enabled:', audioTrack.enabled);
+    } else {
+      console.warn('[VideoX] ⚠️ No audio capture succeeded — video will be silent');
+    }
+
+    // Step 5: Set up canvas for watermark rendering
+    setProgress(26, 'Preparing watermark canvas…');
+
+    const canvas = document.getElementById('wmCanvas');
+    canvas.width = vw;
+    canvas.height = totalH;
+    const ctx = canvas.getContext('2d');
+
     function roundRect(c, x, y, w, h, r) {
       c.beginPath();
       c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.quadraticCurveTo(x + w, y, x + w, y + r);
@@ -503,153 +579,143 @@ async function startWatermark(format = 'mp4') {
       c.lineTo(x, y + r); c.quadraticCurveTo(x, y, x + r, y); c.closePath();
     }
 
-    const wmCanvas = document.createElement('canvas');
-    wmCanvas.width = vw;
-    wmCanvas.height = totalH;
-    const wmCtx = wmCanvas.getContext('2d');
-    // Canvas starts fully transparent — perfect for overlay
+    function drawWatermark() {
+      const fontSize = Math.max(28, Math.round(vw * 0.04));
+      const text = getSelectedWatermark();
+      ctx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
+      const tw = ctx.measureText(text).width;
+      const padX = 18, padY = 10;
+      const bx = 24, by = totalH - fontSize - padY * 2 - 24;
+      const bw = tw + padX * 2, bh = fontSize + padY * 2;
 
-    // Draw watermark (same visual as preview)
-    const fontSize = Math.max(28, Math.round(vw * 0.04));
-    const wmText = getSelectedWatermark();
-    wmCtx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
-    const tw = wmCtx.measureText(wmText).width;
-    const padX = 18, padY = 10;
-    const bx = 24, by = totalH - fontSize - padY * 2 - 24;
-    const bw = tw + padX * 2, bh = fontSize + padY * 2;
+      ctx.save();
+      ctx.globalAlpha = 0.38;
+      ctx.fillStyle = '#000';
+      roundRect(ctx, bx, by, bw, bh, 12); ctx.fill();
+      ctx.globalAlpha = 1;
 
-    // frosted dark pill background
-    wmCtx.save();
-    wmCtx.globalAlpha = 0.38;
-    wmCtx.fillStyle = '#000';
-    roundRect(wmCtx, bx, by, bw, bh, 12);
-    wmCtx.fill();
-    wmCtx.globalAlpha = 1;
+      ctx.textBaseline = 'top';
+      ctx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
 
-    wmCtx.textBaseline = 'top';
-    wmCtx.font = `bold italic ${fontSize}px 'Dancing Script', cursive`;
+      ctx.shadowColor = 'rgba(29,155,240,0.9)'; ctx.shadowBlur = 32;
+      ctx.globalAlpha = 0.22; ctx.fillStyle = '#fff';
+      ctx.fillText(text, bx + padX, by + padY);
+      ctx.fillText(text, bx + padX, by + padY);
 
-    // layer 1 — wide glow
-    wmCtx.shadowColor = 'rgba(29,155,240,0.9)'; wmCtx.shadowBlur = 32;
-    wmCtx.globalAlpha = 0.22; wmCtx.fillStyle = '#fff';
-    wmCtx.fillText(wmText, bx + padX, by + padY);
-    wmCtx.fillText(wmText, bx + padX, by + padY);
+      ctx.shadowColor = 'rgba(168,85,247,0.85)'; ctx.shadowBlur = 18;
+      ctx.globalAlpha = 0.38;
+      ctx.fillText(text, bx + padX, by + padY);
 
-    // layer 2 — purple mid glow
-    wmCtx.shadowColor = 'rgba(168,85,247,0.85)'; wmCtx.shadowBlur = 18;
-    wmCtx.globalAlpha = 0.38;
-    wmCtx.fillText(wmText, bx + padX, by + padY);
+      ctx.shadowColor = 'rgba(255,255,255,0.8)'; ctx.shadowBlur = 7;
+      ctx.globalAlpha = 0.70; ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fillText(text, bx + padX, by + padY);
 
-    // layer 3 — tight white glow
-    wmCtx.shadowColor = 'rgba(255,255,255,0.8)'; wmCtx.shadowBlur = 7;
-    wmCtx.globalAlpha = 0.70; wmCtx.fillStyle = 'rgba(255,255,255,0.92)';
-    wmCtx.fillText(wmText, bx + padX, by + padY);
-    wmCtx.restore();
-
-    // Export watermark canvas as PNG blob
-    const wmPngBlob = await new Promise(resolve => wmCanvas.toBlob(resolve, 'image/png'));
-
-    // Step 5: Load FFmpeg WASM and process
-    setProgress(30, 'Loading FFmpeg video processor…');
-
-    let finalBlob;
-    try {
-      const { FFmpeg: FF } = FFmpegWASM;
-      const { fetchFile: ff_fetchFile, toBlobURL } = FFmpegUtil;
-
-      const ffmpegInst = new FF();
-      ffmpegInst.on('log', ({ message }) => console.log('[FFmpeg]', message));
-      ffmpegInst.on('progress', ({ progress }) => {
-        const pct = 45 + Math.round(progress * 50);
-        setProgress(pct, `Processing video… ${Math.round(progress * 100)}%`);
-      });
-
-      // Try loading FFmpeg — local first, then CDN via toBlobURL
-      try {
-        await ffmpegInst.load({
-          coreURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.js',
-          wasmURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.wasm',
-        });
-      } catch (localErr) {
-        console.warn('Local FFmpeg core load failed, trying CDN:', localErr);
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-        await ffmpegInst.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
-      }
-
-      setProgress(40, 'Writing files to FFmpeg…');
-
-      // Write original video + watermark PNG into FFmpeg filesystem
-      await ffmpegInst.writeFile('input.mp4', await ff_fetchFile(videoBlob));
-      await ffmpegInst.writeFile('watermark.png', await ff_fetchFile(wmPngBlob));
-
-      setProgress(45, 'Burning watermark into video (with audio)…');
-
-      // Build FFmpeg command
-      // The watermark PNG is full-size (vw × totalH), overlay at 0:0
-      // Audio is preserved from the original via -map 0:a?
-      if (stripeEnabled && STRIPE_H > 0) {
-        // Pad original video with white stripe on top, then overlay watermark
-        await ffmpegInst.exec([
-          '-i', 'input.mp4',
-          '-i', 'watermark.png',
-          '-filter_complex',
-          `[0:v]pad=${vw}:${totalH}:0:${STRIPE_H}:white[padded];[padded][1:v]overlay=0:0[vout]`,
-          '-map', '[vout]',
-          '-map', '0:a?',
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-crf', '23',
-          '-c:a', 'aac',
-          '-b:a', '192k',
-          '-movflags', '+faststart',
-          '-y', 'output.mp4'
-        ]);
-      } else {
-        // Just overlay watermark on original video
-        await ffmpegInst.exec([
-          '-i', 'input.mp4',
-          '-i', 'watermark.png',
-          '-filter_complex', '[0:v][1:v]overlay=0:0[vout]',
-          '-map', '[vout]',
-          '-map', '0:a?',
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-crf', '23',
-          '-c:a', 'aac',
-          '-b:a', '192k',
-          '-movflags', '+faststart',
-          '-y', 'output.mp4'
-        ]);
-      }
-
-      setProgress(97, 'Reading final MP4…');
-      const mp4Data = await ffmpegInst.readFile('output.mp4');
-      finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
-      try { ffmpegInst.terminate(); } catch (e) {}
-
-    } catch (ffErr) {
-      console.error('FFmpeg processing failed:', ffErr);
-      // Fallback: download the ORIGINAL video as-is (with audio, no watermark)
-      // This is better than a silent video
-      console.warn('Falling back to original video download (with audio, without watermark)');
-      finalBlob = videoBlob;
+      ctx.restore();
     }
 
+    // Step 6: Set up MediaRecorder with canvas video + audio
+    const candidateTypes = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+      'video/mp4',
+    ];
+    const mimeType = candidateTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+    console.log('[VideoX] MediaRecorder mime:', mimeType);
+
+    const canvasStream = canvas.captureStream(30);
+
+    // Add audio track to canvas stream
+    if (audioTrack) {
+      canvasStream.addTrack(audioTrack);
+      console.log('[VideoX] Audio track added to recording stream. Total tracks:',
+        canvasStream.getTracks().length,
+        '(video:', canvasStream.getVideoTracks().length,
+        'audio:', canvasStream.getAudioTracks().length + ')');
+    }
+
+    const recorder = new MediaRecorder(canvasStream, { mimeType, videoBitsPerSecond: 5_000_000 });
+    const chunks = [];
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+    setProgress(28, 'Recording watermark + audio…');
+
+    // Step 7: Render loop — play video, draw frames + watermark on canvas
+    await new Promise((res, rej) => {
+      recorder.start(100);
+      let animId;
+
+      function renderFrame() {
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = 'transparent';
+
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, vw, totalH);
+
+        try {
+          ctx.drawImage(video, 0, STRIPE_H, vw, vh);
+        } catch (e) {}
+
+        if (stripeEnabled && STRIPE_H > 0) {
+          ctx.globalAlpha = 1;
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, vw, STRIPE_H);
+        }
+
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+        drawWatermark();
+
+        animId = requestAnimationFrame(renderFrame);
+      }
+
+      video.onplay = () => { animId = requestAnimationFrame(renderFrame); };
+      video.onended = () => {
+        cancelAnimationFrame(animId);
+        setTimeout(() => recorder.stop(), 200); // small delay to flush audio
+      };
+      video.onerror = () => rej(new Error('Playback error during rendering'));
+      recorder.onstop = res;
+
+      video.ontimeupdate = () => {
+        if (duration > 0) {
+          const pct = 28 + Math.round((video.currentTime / duration) * 65);
+          setProgress(pct, `Recording… ${Math.round(video.currentTime)}s / ${Math.round(duration)}s`);
+        }
+      };
+
+      // Start playback — triggers audio flow through Web Audio API
+      video.play().catch(playErr => {
+        console.error('[VideoX] Play failed:', playErr);
+        // If unmuted play fails due to autoplay policy, try muted (lose audio)
+        video.muted = true;
+        video.play().catch(rej);
+      });
+    });
+
+    // Cleanup
+    if (audioCtx) { try { audioCtx.close(); } catch (e) {} }
+    URL.revokeObjectURL(localBlobUrl);
+
+    // Step 8: Package and download
+    setProgress(95, 'Packaging video file…');
+
+    const finalBlob = new Blob(chunks, { type: mimeType });
+    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
     const dlUrl = URL.createObjectURL(finalBlob);
-    setProgress(100, '✅ Done! Saving MP4…');
+    setProgress(100, '✅ Done! Saving file…');
 
     const wmName = getSelectedWatermark();
     const a = document.createElement('a');
-    a.href = dlUrl; a.download = `${wmName}_${activeQualLabel}.mp4`;
+    a.href = dlUrl; a.download = `${wmName}_${activeQualLabel}.${ext}`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(dlUrl), 15000);
 
     wmStatus.textContent = '✅ Watermarked video downloaded!';
     wmStatus.style.color = '#22c55e';
-    wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Download Again (MP4)';
+    wmDownloadBtn.querySelector('.wm-btn-text').textContent = 'Download Again';
     wmDownloadBtn.disabled = false;
     document.getElementById('mp3DownloadBtn').disabled = false;
 
