@@ -1,87 +1,147 @@
 // api/proxy.js — Vercel Edge Function
-// Proxies Twitter video URLs, adding CORS headers so the browser
-// can use them in canvas (for watermarking) and FFmpeg (for MP3).
+// Securely proxies Twitter/Instagram media and API endpoints, adding CORS and CORP headers
+// so the browser can process media in Canvas, Web Audio, and MediaRecorder.
 export const config = { runtime: 'edge' };
+
+const ALLOWED_DOMAINS = [
+  'twimg.com',
+  'twitter.com',
+  'x.com',
+  't.co',
+  'cdninstagram.com',
+  'fbcdn.net',
+  'instagram.com',
+  'threads.net',
+  'twitsave.com',
+  'ddinstagram.com',
+  'fxtwitter.com',
+  'vxtwitter.com',
+  'fixupx.com',
+];
+
+const PRIVATE_IP_PATTERNS = [
+  /^localhost$/i,
+  /^127\./,
+  /^10\./,
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+  /^192\.168\./,
+  /^169\.254\./,
+  /^0\.0\.0\.0$/,
+  /^::1$/,
+];
+
+function corsResponse(body, status, customHeaders = {}) {
+  const headers = new Headers({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, Accept, Authorization',
+    'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    ...customHeaders,
+  });
+  return new Response(body, { status, headers });
+}
 
 export default async function handler(req) {
   // ── Handle CORS preflight OPTIONS request ───────────────────
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': 'Range, Content-Type, Accept, Authorization',
-        'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
-        'Access-Control-Max-Age': '86400',
-      },
-    });
+    return corsResponse(null, 204, { 'Access-Control-Max-Age': '86400' });
+  }
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return corsResponse(JSON.stringify({ error: 'Method not allowed' }), 405, { 'Content-Type': 'application/json' });
   }
 
   const { searchParams } = new URL(req.url);
-  const url = searchParams.get('url');
+  const urlParam = searchParams.get('url');
 
-  // ── Security: only allow twimg.com video URLs ──────────────
-  if (!url) {
-    return new Response(JSON.stringify({ error: 'Missing url param' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+  if (!urlParam) {
+    return corsResponse(JSON.stringify({ error: 'Missing url param' }), 400, { 'Content-Type': 'application/json' });
   }
+
   let parsed;
-  try { parsed = new URL(url); } catch {
-    return new Response(JSON.stringify({ error: 'Invalid URL' }), {
-      status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
-  }
-  const hostname = parsed.hostname.toLowerCase();
-  const isAllowed = ['twimg.com', 'twitter.com', 'cdninstagram.com', 'fbcdn.net', 'instagram.com'].some(d => hostname.endsWith(d));
-  if (!isAllowed) {
-    return new Response(JSON.stringify({ error: 'Only twimg.com, cdninstagram.com, fbcdn.net URLs are allowed' }), {
-      status: 403, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+  try {
+    parsed = new URL(urlParam);
+  } catch {
+    return corsResponse(JSON.stringify({ error: 'Invalid URL format' }), 400, { 'Content-Type': 'application/json' });
   }
 
-  // ── Forward request to CDN ─────────────────────────
-  const isInstagramDomain = hostname.includes('instagram') || hostname.includes('fbcdn');
+  // Enforce HTTPS or HTTP
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return corsResponse(JSON.stringify({ error: 'Only HTTP/HTTPS URLs are allowed' }), 400, { 'Content-Type': 'application/json' });
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+
+  // Block private network / SSRF attacks
+  if (PRIVATE_IP_PATTERNS.some(pat => pat.test(hostname))) {
+    return corsResponse(JSON.stringify({ error: 'Access to private network address denied' }), 403, { 'Content-Type': 'application/json' });
+  }
+
+  // Strict domain validation: exact match or subdomain
+  const isAllowed = ALLOWED_DOMAINS.some(d => hostname === d || hostname.endsWith('.' + d));
+  if (!isAllowed) {
+    return corsResponse(
+      JSON.stringify({ error: `Domain '${hostname}' is not authorized for proxying` }),
+      403,
+      { 'Content-Type': 'application/json' }
+    );
+  }
+
+  // Forward request headers
+  const isInstagram = hostname.includes('instagram') || hostname.includes('fbcdn');
   const fetchHeaders = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Referer': isInstagramDomain ? 'https://www.instagram.com/' : 'https://twitter.com/',
-    'Origin': isInstagramDomain ? 'https://www.instagram.com' : 'https://twitter.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Accept': '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': isInstagram ? 'https://www.instagram.com/' : 'https://twitter.com/',
+    'Origin': isInstagram ? 'https://www.instagram.com' : 'https://twitter.com',
   };
 
-  // Forward Range header so the browser can seek inside the video
   const range = req.headers.get('range');
   if (range) fetchHeaders['Range'] = range;
 
+  // Timeout guard (25 seconds) to prevent edge connection hanging
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
+
   let upstream;
   try {
-    upstream = await fetch(url, { headers: fetchHeaders });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), {
-      status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+    upstream = await fetch(parsed.toString(), {
+      method: req.method,
+      headers: fetchHeaders,
+      signal: controller.signal,
+      redirect: 'follow',
     });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const isTimeout = err.name === 'AbortError';
+    return corsResponse(
+      JSON.stringify({ error: isTimeout ? 'Upstream request timed out' : 'Upstream connection failed: ' + err.message }),
+      502,
+      { 'Content-Type': 'application/json' }
+    );
+  } finally {
+    clearTimeout(timeoutId);
   }
 
-  // ── Build response headers ──────────────────────────────────
+  // Build response headers
   const resHeaders = new Headers();
-
-  // Copy relevant upstream headers
-  for (const key of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
+  const passThrough = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control', 'last-modified', 'etag'];
+  for (const key of passThrough) {
     const val = upstream.headers.get(key);
     if (val) resHeaders.set(key, val);
   }
 
-  // CORS headers — allow any origin to use this resource freely
+  // Enforce CORS & CORP headers
   resHeaders.set('Access-Control-Allow-Origin', '*');
   resHeaders.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
   resHeaders.set('Access-Control-Allow-Headers', 'Range, Content-Type, Accept, Authorization');
   resHeaders.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
   resHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
 
-  // Stream the body through without buffering — handles large videos
   return new Response(upstream.body, {
     status: upstream.status,
     headers: resHeaders,
   });
 }
-
