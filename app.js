@@ -630,40 +630,44 @@ async function startWatermark(format = 'mp4') {
     let finalBlob;
     try {
       const { FFmpeg: FF } = FFmpegWASM;
-      const { fetchFile: ff_fetchFile, toBlobURL } = FFmpegUtil;
+      const { fetchFile: ff_fetchFile } = FFmpegUtil;
 
       const ffmpegInst = new FF();
+      ffmpegInst.on('log', ({ message }) => console.log('[FFmpeg]', message));
       ffmpegInst.on('progress', ({ progress }) => {
         setProgress(85 + Math.round(progress * 13), `Muxing audio… ${Math.round(progress * 100)}%`);
       });
 
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      // Load FFmpeg from local same-origin files (required by COEP require-corp)
       await ffmpegInst.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        coreURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.js',
+        wasmURL: '/public/ffmpeg/core/dist/umd/ffmpeg-core.wasm',
       });
 
-      // Write the canvas-recorded video (video track, no audio)
+      setProgress(90, 'Writing video data to FFmpeg…');
+
+      // Write the canvas-recorded video (video only, no audio)
       const canvasBlob = new Blob(chunks, { type: mimeType });
       await ffmpegInst.writeFile('canvas_video.webm', await ff_fetchFile(canvasBlob));
 
       // Write the original downloaded video (audio source)
       await ffmpegInst.writeFile('original.mp4', await ff_fetchFile(videoBlob));
 
-      setProgress(96, 'Muxing watermarked video with original audio…');
+      setProgress(93, 'Muxing watermarked video with original audio…');
 
-      // Mux: take video from canvas recording, audio from original video
+      // Mux: video from canvas + audio from original.
+      // Use -map 1:a? (optional) so videos without audio (GIFs) don't error.
       await ffmpegInst.exec([
-        '-i', 'canvas_video.webm',   // input 0: watermarked video (no audio)
-        '-i', 'original.mp4',         // input 1: original video (has audio)
-        '-map', '0:v:0',              // video from canvas recording
-        '-map', '1:a:0',              // audio from original video
+        '-i', 'canvas_video.webm',  // input 0: watermarked video (no audio)
+        '-i', 'original.mp4',        // input 1: original video (has audio)
+        '-map', '0:v:0',             // video stream from canvas recording
+        '-map', '1:a?',              // audio from original (optional — won't fail if absent)
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
         '-crf', '22',
         '-c:a', 'aac',
         '-b:a', '192k',
-        '-shortest',                  // trim to shortest stream
+        '-shortest',
         '-movflags', '+faststart',
         'output.mp4'
       ]);
@@ -673,7 +677,7 @@ async function startWatermark(format = 'mp4') {
       finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
       try { ffmpegInst.terminate(); } catch (e) {}
     } catch (ffErr) {
-      console.warn('FFmpeg audio mux failed, falling back to canvas-only:', ffErr);
+      console.error('FFmpeg audio mux failed:', ffErr);
       // Fallback: deliver canvas recording without audio mux
       finalBlob = new Blob(chunks, { type: mimeType });
     }
