@@ -463,43 +463,22 @@ async function startWatermark(format = 'mp4') {
       throw new Error(`Failed to download video: ${dlErr.message}`);
     }
 
-    setProgress(23, 'Video downloaded! Preparing local canvas player…');
+    // ── 2. Get video dimensions for canvas rendering ──────────────
+    setProgress(23, 'Video downloaded! Reading video metadata…');
     const localBlobUrl = URL.createObjectURL(videoBlob);
+    const probeVideo = document.createElement('video');
+    probeVideo.src = localBlobUrl;
+    probeVideo.preload = 'metadata';
 
-    // ── 2. Create local video element from Blob URL ──────────────
-    const video = document.createElement('video');
-    video.src = localBlobUrl;
-    video.muted = false; // Enabled for Web Audio API capture
-    video.volume = 0.001; // Silent output to speakers
-    video.playsInline = true;
-    video.preload = 'auto';
-
-    await new Promise((res, rej) => {
-      video.onloadedmetadata = res;
-      video.onerror = () => rej(new Error('Failed to load downloaded video data'));
-      video.load();
+    const { vw, vh, duration } = await new Promise((res, rej) => {
+      probeVideo.onloadedmetadata = () => res({
+        vw: probeVideo.videoWidth || 1280,
+        vh: probeVideo.videoHeight || 720,
+        duration: probeVideo.duration || 1,
+      });
+      probeVideo.onerror = () => rej(new Error('Failed to read video metadata'));
     });
-
-    // ── 3. Audio Capture via Web Audio API ─────────────────────────
-    let audioCtx = null;
-    let audioTrack = null;
-    try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtx) {
-        audioCtx = new AudioCtx();
-        if (audioCtx.state === 'suspended') await audioCtx.resume();
-        const source = audioCtx.createMediaElementSource(video);
-        const dest = audioCtx.createMediaStreamDestination();
-        source.connect(dest);
-        audioTrack = dest.stream.getAudioTracks()[0] || null;
-      }
-    } catch (aErr) {
-      console.warn('Audio capture setup notice:', aErr);
-    }
-
-    const vw = video.videoWidth || 1280;
-    const vh = video.videoHeight || 720;
-    const duration = video.duration || 1;
+    probeVideo.src = '';
 
     // ── Top stripe — 20% of video height when toggle enabled ─────
     const stripeEnabled = !!(document.getElementById('stripeToggle')?.checked);
@@ -560,25 +539,37 @@ async function startWatermark(format = 'mp4') {
       ctx.lineTo(x, y + r); ctx.quadraticCurveTo(x, y, x + r, y); ctx.closePath();
     }
 
-    // ── 4. MediaRecorder Setup ─────────────────────────────────────
+    // ── 3. Canvas Render Pass (video frames only, no audio capture) ───
     const candidateTypes = [
-      'video/mp4;codecs=avc1,mp4a.40.2',
+      'video/mp4;codecs=avc1',
       'video/mp4',
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
       'video/webm',
     ];
     const mimeType = candidateTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
-    const stream = canvas.captureStream(30);
-    if (audioTrack) stream.addTrack(audioTrack);
 
+    // Create a silent video element just for rendering frames
+    const renderVideo = document.createElement('video');
+    renderVideo.src = localBlobUrl;
+    renderVideo.muted = true;  // muted is fine — we'll mux real audio from original blob via FFmpeg
+    renderVideo.playsInline = true;
+    renderVideo.preload = 'auto';
+
+    await new Promise((res, rej) => {
+      renderVideo.onloadedmetadata = res;
+      renderVideo.onerror = () => rej(new Error('Failed to load video for rendering'));
+      renderVideo.load();
+    });
+
+    const stream = canvas.captureStream(30);
     const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5_000_000 });
     const chunks = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
     setProgress(28, 'Rendering watermark onto video frames…');
 
-    // ── 5. Render Loop ─────────────────────────────────────────────
+    // ── 4. Render Loop ─────────────────────────────────────────────
     await new Promise((res, rej) => {
       recorder.start(100);
       let animId;
@@ -594,7 +585,7 @@ async function startWatermark(format = 'mp4') {
 
         // 2. Video frame
         try {
-          ctx.drawImage(video, 0, STRIPE_H, vw, vh);
+          ctx.drawImage(renderVideo, 0, STRIPE_H, vw, vh);
         } catch (e) {}
 
         // 3. White stripe ON TOP of video (if toggle enabled)
@@ -613,74 +604,78 @@ async function startWatermark(format = 'mp4') {
         animId = requestAnimationFrame(renderFrame);
       }
 
-      video.onplay = () => { animId = requestAnimationFrame(renderFrame); };
-      video.onended = () => { cancelAnimationFrame(animId); recorder.stop(); };
-      video.onerror = () => rej(new Error('Playback error during rendering'));
+      renderVideo.onplay = () => { animId = requestAnimationFrame(renderFrame); };
+      renderVideo.onended = () => { cancelAnimationFrame(animId); recorder.stop(); };
+      renderVideo.onerror = () => rej(new Error('Playback error during rendering'));
       recorder.onstop = res;
 
-      video.ontimeupdate = () => {
+      renderVideo.ontimeupdate = () => {
         if (duration > 0) {
-          const pct = 28 + Math.round((video.currentTime / duration) * 62);
-          setProgress(pct, `Burning watermark… ${Math.round(video.currentTime)}s / ${Math.round(duration)}s`);
+          const pct = 28 + Math.round((renderVideo.currentTime / duration) * 55);
+          setProgress(pct, `Burning watermark… ${Math.round(renderVideo.currentTime)}s / ${Math.round(duration)}s`);
         }
       };
 
-      video.play().catch(rej);
+      renderVideo.play().catch(rej);
     });
 
-    if (audioCtx) {
-      try { audioCtx.close(); } catch (e) {}
-    }
     URL.revokeObjectURL(localBlobUrl);
 
-    // ── 6. Final MP4 Packaging / Transcoding ──────────────────────
+    // ── 5. Mux original audio back using FFmpeg WASM ──────────────
+    // The canvas recording has NO audio (muted). We use FFmpeg to mux
+    // the original video's audio track into the watermarked canvas video.
+    setProgress(85, 'Canvas render complete. Loading FFmpeg to restore audio…');
+    await sleep(100);
+
     let finalBlob;
-    if (mimeType.includes('mp4')) {
-      setProgress(98, 'Finalizing MP4 file…');
-      finalBlob = new Blob(chunks, { type: 'video/mp4' });
-    } else {
-      // Re-encode WebM to MP4 via FFmpeg WASM (loaded from local same-origin vendor)
-      setProgress(91, 'Canvas recording done. Loading FFmpeg for MP4 conversion…');
-      await sleep(100);
+    try {
+      const { FFmpeg: FF } = FFmpegWASM;
+      const { fetchFile: ff_fetchFile, toBlobURL } = FFmpegUtil;
 
-      try {
-        const { FFmpeg: FF } = FFmpegWASM;
-        const { fetchFile: ff_fetchFile, toBlobURL } = FFmpegUtil;
+      const ffmpegInst = new FF();
+      ffmpegInst.on('progress', ({ progress }) => {
+        setProgress(85 + Math.round(progress * 13), `Muxing audio… ${Math.round(progress * 100)}%`);
+      });
 
-        const ffmpegInst = new FF();
-        ffmpegInst.on('progress', ({ progress }) => {
-          setProgress(91 + Math.round(progress * 8), `Converting to MP4… ${Math.round(progress * 100)}%`);
-        });
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpegInst.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
 
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-        await ffmpegInst.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
+      // Write the canvas-recorded video (video track, no audio)
+      const canvasBlob = new Blob(chunks, { type: mimeType });
+      await ffmpegInst.writeFile('canvas_video.webm', await ff_fetchFile(canvasBlob));
 
-        setProgress(93, 'Writing recorded data…');
-        const webmBlob = new Blob(chunks, { type: mimeType });
-        await ffmpegInst.writeFile('wm_input.webm', await ff_fetchFile(webmBlob));
+      // Write the original downloaded video (audio source)
+      await ffmpegInst.writeFile('original.mp4', await ff_fetchFile(videoBlob));
 
-        setProgress(95, 'Re-encoding to H.264 MP4…');
-        await ffmpegInst.exec([
-          '-i', 'wm_input.webm',
-          '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-crf', '22',
-          '-c:a', 'aac',
-          '-movflags', '+faststart',
-          'output.mp4'
-        ]);
+      setProgress(96, 'Muxing watermarked video with original audio…');
 
-        setProgress(99, 'Packaging MP4 file…');
-        const mp4Data = await ffmpegInst.readFile('output.mp4');
-        finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
-        try { ffmpegInst.terminate(); } catch (e) {}
-      } catch (ffErr) {
-        console.warn('FFmpeg conversion fallback:', ffErr);
-        finalBlob = new Blob(chunks, { type: mimeType });
-      }
+      // Mux: take video from canvas recording, audio from original video
+      await ffmpegInst.exec([
+        '-i', 'canvas_video.webm',   // input 0: watermarked video (no audio)
+        '-i', 'original.mp4',         // input 1: original video (has audio)
+        '-map', '0:v:0',              // video from canvas recording
+        '-map', '1:a:0',              // audio from original video
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-crf', '22',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-shortest',                  // trim to shortest stream
+        '-movflags', '+faststart',
+        'output.mp4'
+      ]);
+
+      setProgress(99, 'Packaging final MP4…');
+      const mp4Data = await ffmpegInst.readFile('output.mp4');
+      finalBlob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
+      try { ffmpegInst.terminate(); } catch (e) {}
+    } catch (ffErr) {
+      console.warn('FFmpeg audio mux failed, falling back to canvas-only:', ffErr);
+      // Fallback: deliver canvas recording without audio mux
+      finalBlob = new Blob(chunks, { type: mimeType });
     }
 
     const dlUrl = URL.createObjectURL(finalBlob);

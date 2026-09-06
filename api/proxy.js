@@ -41,11 +41,12 @@ export default async function handler(req) {
     });
   }
 
-  // ── Forward request to Twitter CDN ─────────────────────────
+  // ── Forward request to CDN ─────────────────────────
+  const isInstagramDomain = hostname.includes('instagram') || hostname.includes('fbcdn');
   const fetchHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    'Referer': 'https://twitter.com/',
-    'Origin': 'https://twitter.com',
+    'Referer': isInstagramDomain ? 'https://www.instagram.com/' : 'https://twitter.com/',
+    'Origin': isInstagramDomain ? 'https://www.instagram.com' : 'https://twitter.com',
   };
 
   // Forward Range header so the browser can seek inside the video
