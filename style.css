@@ -416,25 +416,30 @@ body {
   animation: pulse 2s ease infinite;
 }
 
-/* Video container with relative positioning for overlay */
+/* Video container — shrinks to the video's natural aspect ratio, no black bars */
 .video-container {
   position: relative;
-  width: 100%;
-  background: #000;
+  /* Center the container but don't force it wider than the video */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;           /* center horizontally inside preview-wrap */
   border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--clr-border);
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
+  /* No background: transparent so no side bars show */
 }
 #previewVideo {
-  width: 100%;
-  max-height: 480px;
   display: block;
-  object-fit: contain;
-  background: #000;
+  max-width: 100%;
+  max-height: 520px;
+  width: auto;              /* let the video keep its natural width */
+  height: auto;
+  border-radius: 0;
+  background: transparent;
 }
 
 /* White top stripe in preview — stacked above video so video is never cut off */
@@ -450,7 +455,7 @@ body {
   transition: height 0.25s ease;
 }
 .video-container.has-stripe {
-  background: #ffffff;
+  background: #ffffff; /* white only shows inside the stripe div, container matches video width */
 }
 .video-container.has-stripe .preview-stripe {
   display: block;
